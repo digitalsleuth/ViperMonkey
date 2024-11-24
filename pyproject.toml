@@ -27,16 +27,12 @@ authors = [
 maintainers = [
   {name = "Corey Forman (digitalsleuth)", email = "github@digitalsleuth.ca"}
 ]
-description = (
-        "ViperMonkey is a VBA Emulation engine written in Python, designed to "
-        "analyze and deobfuscate malicious VBA Macros contained in Microsoft "
-        "Office files (Word, Excel, PowerPoint, Publisher, etc).")
+description = ("ViperMonkey is a VBA Emulation engine written in Python, designed to analyze and deobfuscate malicious VBA Macros contained in Microsoft Office files (Word, Excel, PowerPoint, Publisher, etc)."
 readme = "README.md"
 keywords = ["digital forensics", "dfir", "malware", "vmonkey", "vipermonkey"]
 classifiers = [
   "Development Status :: 5 - Production/Stable",
   "Programming Language :: Python :: 3",
-#  "License :: OSI Approved :: MIT License",
   "Operating System :: OS Independent"
 ]
 
