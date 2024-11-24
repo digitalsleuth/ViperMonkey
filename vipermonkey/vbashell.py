@@ -54,7 +54,10 @@ __version__ = '0.04'
 
 # --- IMPORTS ------------------------------------------------------------------
 
-import logging, optparse, sys, os
+import logging
+import optparse
+import sys
+import os
 
 import colorlog
 
@@ -64,9 +67,8 @@ if not _thismodule_dir in sys.path:
     sys.path.insert(0, _thismodule_dir)
 
 # relative import of the vmonkey module:
-import vmonkey
+import vipermonkey.core
 
-vm = vmonkey.ViperMonkey()
 
 
 def parse(filename=None):

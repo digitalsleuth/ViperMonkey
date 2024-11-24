@@ -146,7 +146,7 @@ from logging import FileHandler
 # 2018-08-17 v0.07 KS: - lots of bug fixes and additions by Kirk Sayre (PR #34)
 #                  PL: - added ASCII art banner
 
-__version__ = '2.0.0'
+__version__ = '3.0.0'
 
 #------------------------------------------------------------------------------
 # TODO:
@@ -283,7 +283,7 @@ def parse_stream(subfilename,
         local_funcs = []
     
     # Check for timeouts.
-    core.vba_object.limits_exceeded(throw_error=True)
+    vipermonkey.core.vba_object.limits_exceeded(throw_error=True)
     
     # Are the arguments all in a single tuple?
     if (stream_path is None):
@@ -295,7 +295,7 @@ def parse_stream(subfilename,
         return "empty"
         
     # Collapse long lines.
-    vba_code = core.vba_collapse_long_lines(vba_code)
+    vba_code = vipermonkey.core.vba_collapse_long_lines(vba_code)
         
     # Filter cruft from the VBA.
     vba_code = filter_vba(vba_code)
@@ -316,7 +316,7 @@ def parse_stream(subfilename,
     
     # Strip out code that does not affect the end result of the program.
     if (strip_useless):
-        vba_code = core.strip_lines.strip_useless_code(vba_code, local_funcs)
+        vba_code = vipermonkey.core.strip_lines.strip_useless_code(vba_code, local_funcs)
     safe_print('-'*79)
     safe_print('VBA MACRO %s ' % vba_filename)
     safe_print('in file: %s - OLE stream: %s' % (subfilename, repr(stream_path)))
@@ -335,7 +335,7 @@ def parse_stream(subfilename,
         #sys.exit(0)
         safe_print('PARSING VBA CODE:')
         try:
-            m = core.module.parseString(vba_code + "\n", parseAll=True)[0]
+            m = vipermonkey.core.module.parseString(vba_code + "\n", parseAll=True)[0]
             pyparsing.ParserElement.resetCache()
             m.code = vba_code
         except pyparsing.ParseException as err:
@@ -348,7 +348,7 @@ def parse_stream(subfilename,
             return None
 
     # Check for timeouts.
-    core.vba_object.limits_exceeded(throw_error=True)
+    vipermonkey.core.vba_object.limits_exceeded(throw_error=True)
 
     # Differentiate between no macros and macros that failed to parse.
     if (m is None):
@@ -380,7 +380,7 @@ def get_all_local_funcs(vba):
             r.extend(names)
 
         # Get constant defs. This is saved in strip_lines.defined_constants.
-        core.strip_lines.find_defined_constants(vba_code)
+        vipermonkey.core.strip_lines.find_defined_constants(vba_code)
 
     # Return local function names.
     return r
@@ -690,7 +690,7 @@ def pull_embedded_pe_files(data, out_dir):
     """
 
     # Is this a Office 2007 (zip) file?
-    if core.filetype.is_office2007_file(data, is_data=True):
+    if vipermonkey.core.filetype.is_office2007_file(data, is_data=True):
 
         # convert data to a BytesIO buffer so that we can use zipfile in memory
         # without writing a temp file on disk:
@@ -765,7 +765,7 @@ def _report_analysis_results(vm, data, display_int_iocs, orig_filename, out_file
     """
 
     # Limit the number of base64 IOCs.
-    full_iocs = core.vba_context.intermediate_iocs
+    full_iocs = vipermonkey.core.vba_context.intermediate_iocs
     tmp_b64_iocs = []
     for ioc in full_iocs:
         if ("http" not in ioc):
@@ -774,7 +774,7 @@ def _report_analysis_results(vm, data, display_int_iocs, orig_filename, out_file
     tmp_b64_iocs = sorted(tmp_b64_iocs, key=len)[::-1][:200]
     for ioc in tmp_b64_iocs:
         full_iocs.add(ioc)
-        core.vba_context.num_b64_iocs += 1
+        vipermonkey.core.vba_context.num_b64_iocs += 1
 
     # Print table of all recorded actions
     if (len(vm.actions) > 0):
@@ -796,7 +796,7 @@ def _report_analysis_results(vm, data, display_int_iocs, orig_filename, out_file
             safe_print('')
 
     # Display injected shellcode.
-    shellcode_bytes = core.vba_context.get_shellcode_data()
+    shellcode_bytes = vipermonkey.core.vba_context.get_shellcode_data()
     if (len(shellcode_bytes) > 0):
         safe_print("+---------------------------------------------------------+")
         safe_print("Shell Code Bytes: " + safe_str_convert(shellcode_bytes))
@@ -804,7 +804,7 @@ def _report_analysis_results(vm, data, display_int_iocs, orig_filename, out_file
         safe_print('')
 
     # See if we can directly pull any embedded PE files from the file.
-    pull_embedded_pe_files(data, core.vba_context.out_dir)
+    pull_embedded_pe_files(data, vipermonkey.core.vba_context.out_dir)
 
     # Report VBA builtin fingerprint.
     if (len(vm.external_funcs) > 0):
@@ -945,7 +945,7 @@ def _process_file (filename,
 
     # Set the emulation time limit.
     if (time_limit is not None):
-        core.vba_object.max_emulation_time = datetime.now() + timedelta(minutes=time_limit)
+        vipermonkey.core.vba_object.max_emulation_time = datetime.now() + timedelta(minutes=time_limit)
 
     # Clear out any old crash information.
     global got_crash_error
@@ -953,7 +953,7 @@ def _process_file (filename,
         
     # Create the emulator.
     log.info("Starting emulation...")
-    vm = core.ViperMonkey(filename, data, do_jit=do_jit)
+    vm = vipermonkey.core.ViperMonkey(filename, data, do_jit=do_jit)
     orig_filename = filename
     if (entry_points is not None):
         for entry_point in entry_points:
@@ -1013,7 +1013,7 @@ def _process_file (filename,
             else:
                 out_dir = "/tmp/tmp_file_" + safe_str_convert(random.randrange(0, 10000000000))
             log.info("Saving dropped analysis artifacts in " + out_dir)
-            core.vba_context.out_dir = out_dir
+            vipermonkey.core.vba_context.out_dir = out_dir
             del filename # We already have this in memory, we don't need to read it again.
                 
             # Parse the VBA streams.
@@ -1143,7 +1143,7 @@ def process_file_scanexpr (container, filename, data):
         if vba.detect_vba_macros():
 
             # Read in document metadata.
-            vm = core.ViperMonkey(filename, data)
+            vm = vipermonkey.core.ViperMonkey(filename, data)
             ole = olefile.OleFileIO(filename)
             try:
                 vm.set_metadata(ole.get_metadata())
@@ -1166,7 +1166,7 @@ def process_file_scanexpr (container, filename, data):
                 else:
                     # TODO: option to display code
                     safe_print(vba_code)
-                    vba_code = core.vba_collapse_long_lines(vba_code)
+                    vba_code = vipermonkey.core.vba_collapse_long_lines(vba_code)
                     all_code += '\n' + vba_code
             safe_print('-'*79)
             safe_print('EVALUATED VBA EXPRESSIONS:')
@@ -1174,7 +1174,7 @@ def process_file_scanexpr (container, filename, data):
             t.align = 'l'
             t.max_width['Obfuscated expression'] = 36
             t.max_width['Evaluated value'] = 36
-            for expression, expr_eval in core.scan_expressions(all_code):
+            for expression, expr_eval in vipermonkey.core.scan_expressions(all_code):
                 t.add_row((repr(expression), repr(expr_eval)))
                 safe_print(t)
 
