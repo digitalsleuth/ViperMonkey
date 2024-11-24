@@ -7,7 +7,7 @@ exclude = ["debian*", "binaries*", "build*", "dist*"]
 
 [project]
 name = "vipermonkey"
-version = "3.0.0"
+version = "3.0.0-rc1"
 dependencies = [
     "oletools",
     "olefile",
