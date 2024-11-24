@@ -43,7 +43,8 @@ https://github.com/decalage2/ViperMonkey
 import logging
 import subprocess
 
-from logger import log
+from vipermonkey.core.logger import log
+from vipermonkey.core.utils import safe_str_convert
 
 # Office magic numbers.
 magic_nums = {
@@ -83,8 +84,11 @@ def get_1st_8_bytes(fname, is_data):
 
     curr_magic = ""
     for b in info:
-        curr_magic += hex(ord(b)).replace("0x", "").upper() + " "
-        
+        # Handle info being bytes or str.
+        if (isinstance(b, str)):
+            b = ord(b)
+        curr_magic += hex(b).replace("0x", "").upper() + " "
+
     return curr_magic
 
 def is_pe_file(fname, is_data):
@@ -103,8 +107,17 @@ def is_pe_file(fname, is_data):
     # Read the 1st 8 bytes of the file.
     curr_magic = get_1st_8_bytes(fname, is_data)
 
+    # Check to see if we have non-ascii characters in the 6 bytes after
+    # the (maybe) "MZ".
+    got_ascii = True
+    for hex_c in curr_magic.strip().split(" ")[2:]:
+        val = int("0x" + hex_c, 16)
+        if ((val < 32) or (val > 126)):
+            got_ascii = False
+            break
+    
     # See if we the known magic #.
-    return (curr_magic.startswith(pe_magic_num))
+    return (curr_magic.startswith(pe_magic_num) and (not got_ascii))
 
 def is_office_xml_file(fname, is_data):
     """Check to see if the given file is a MS Office XML file.
@@ -125,18 +138,19 @@ def is_office_xml_file(fname, is_data):
         contents = fname
     else:
         try:
-            f = open(fname, "r")
-            contents = f.read()
+            f = open(fname, "rb")
+            contents = safe_str_convert(f.read())
             f.close()
         except IOError as e:
-            log.error("Cannot read file " + fname + ". " + str(e))
+            log.error("Cannot read file " + safe_str_convert(fname) + ". " + safe_str_convert(e))
             return False
 
     # Return whether this is an Office XML file.
     # TODO: Currently only checks for Word files.
+    contents = safe_str_convert(contents)
     return (('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' in contents) and
             ('<?mso-application progid="Word.Document"?>' in contents))
-
+            
 def is_office_file(fname, is_data):
     """Check to see if the given file is a MS Office (97 or 2007+) file.
 
