@@ -57,9 +57,9 @@ __version__ = '0.08'
 # --- IMPORTS ------------------------------------------------------------------
 
 import logging
-from core.logger import log
+from vipermonkey.core.logger import log
 import re
-from core.curses_ascii import isprint
+from vipermonkey.core.curses_ascii import isprint
 import traceback
 
 import inspect
@@ -67,10 +67,10 @@ import sys
 from datetime import datetime
 import pyparsing
 
-from core.var_in_expr_visitor import var_in_expr_visitor
-from core.utils import safe_str_convert
-from core import utils
-from core import excel
+from vipermonkey.core.var_in_expr_visitor import var_in_expr_visitor
+from vipermonkey.core.utils import safe_str_convert
+from vipermonkey.core import utils
+from vipermonkey.core import excel
 
 max_emulation_time = None
 
@@ -361,7 +361,7 @@ def _read_from_object_text(arg, context):
     #
     # Make sure not to pull out Shapes() references that appear as arguments to function
     # calls.
-    from core import expressions
+    from vipermonkey.core import expressions
     if (("shapes(" in arg_str_low) and (not isinstance(arg, expressions.Function_Call))):
 
         # Yes we do. 
@@ -454,7 +454,7 @@ def contains_excel(arg):
         return True
     
     # Got a function call?
-    from core import expressions
+    from vipermonkey.core import expressions
     if (not isinstance(arg, expressions.Function_Call)):
         return False
 
@@ -756,7 +756,7 @@ def _handle_form_variable_read(arg, context, got_constant_math):
                 log.debug("eval_arg: Try to run as function '" + func_name + "'...")
             func = context.get(func_name)
             r = func
-            from core import procedures
+            from vipermonkey.core import procedures
             if (isinstance(func, (procedures.Function, procedures.Sub)) or
                 ('vipermonkey.core.vba_library.' in safe_str_convert(type(func)))):
                 r = eval_arg(func, context, treat_as_var_name=True)

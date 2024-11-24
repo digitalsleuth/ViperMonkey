@@ -45,8 +45,8 @@ https://github.com/decalage2/ViperMonkey
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-from core.visitor import visitor
-from core.utils import safe_str_convert
+from vipermonkey.core.visitor import visitor
+from vipermonkey.core.utils import safe_str_convert
 
 class var_in_expr_visitor(visitor):
     """Get the names of all variables (and function calls if desired) that
@@ -63,10 +63,10 @@ class var_in_expr_visitor(visitor):
         self.get_functions = get_functions
         
     def visit(self, item):
-        from core.expressions import SimpleNameExpression
-        from core.expressions import MemberAccessExpression
-        from core.expressions import Function_Call
-        from core import procedures
+        from vipermonkey.core.expressions import SimpleNameExpression
+        from vipermonkey.core.expressions import MemberAccessExpression
+        from vipermonkey.core.expressions import Function_Call
+        from vipermonkey.core import procedures
         
         # Already looked at this?
         if (item in self.visited):

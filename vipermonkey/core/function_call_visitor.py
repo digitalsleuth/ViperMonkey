@@ -42,8 +42,8 @@ https://github.com/decalage2/ViperMonkey
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-from core.visitor import visitor
-from core.utils import safe_str_convert
+from vipermonkey.core.visitor import visitor
+from vipermonkey.core.utils import safe_str_convert
 
 class function_call_visitor(visitor):
     """Collect the names of all called functions.
@@ -56,9 +56,9 @@ class function_call_visitor(visitor):
     
     def visit(self, item):
 
-        from core import statements
-        from core import expressions
-        from core import lib_functions
+        from vipermonkey.core import statements
+        from vipermonkey.core import expressions
+        from vipermonkey.core import lib_functions
 
         if (item in self.visited):
             return False

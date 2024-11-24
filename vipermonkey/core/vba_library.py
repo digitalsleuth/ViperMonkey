@@ -57,7 +57,7 @@ import time
 import math
 import re
 import random
-from core.from_unicode_str import from_unicode_str
+from vipermonkey.core.from_unicode_str import from_unicode_str
 import decimal
 import urllib.parse
 #import sys
@@ -65,22 +65,22 @@ import urllib.parse
 
 from pyparsing import ParseException
 
-from core import vb_str
-from core.vba_context import VBA_LIBRARY
-from core.vba_object import eval_arg
-from core.vba_object import VbaLibraryFunc
-from core.vba_object import VBA_Object
-from core import expressions
-from core import excel
-from core import modules
-from core import strip_lines
-from core.python_jit import _eval_python
-from core import utils
-from core.excel import pull_cells_sheet, get_largest_sheet, get_num_rows
-from core import vba_conversion
-from core.utils import isascii
+from vipermonkey.core import vb_str
+from vipermonkey.core.vba_context import VBA_LIBRARY
+from vipermonkey.core.vba_object import eval_arg
+from vipermonkey.core.vba_object import VbaLibraryFunc
+from vipermonkey.core.vba_object import VBA_Object
+from vipermonkey.core import expressions
+from vipermonkey.core import excel
+from vipermonkey.core import modules
+from vipermonkey.core import strip_lines
+from vipermonkey.core.python_jit import _eval_python
+from vipermonkey.core import utils
+from vipermonkey.core.excel import pull_cells_sheet, get_largest_sheet, get_num_rows
+from vipermonkey.core import vba_conversion
+from vipermonkey.core.utils import isascii
 
-from core.logger import log
+from vipermonkey.core.logger import log
 
 # === VBA LIBRARY ============================================================
 
@@ -179,7 +179,7 @@ def get_raw_shellcode_data():
     @return (dict) A dict mapping shellcode byte addresses (int) to
     shellcode byte values (int).
     """
-    from core import vba_context
+    from vipermonkey.core import vba_context
     return vba_context.shellcode
     
 def run_external_function(func_name, context, params, lib_info):
@@ -2370,7 +2370,7 @@ class VarPtr(VbaLibraryFunc):
         context.report_action("External Call", "VarPtr(" + r + ")", "VarPtr", strip_null_bytes=True)
 
         # Save the VarPtr() bytes since they may be shellcode.
-        from core import vba_context
+        from vipermonkey.core import vba_context
         vba_context.add_varptr_data(val)
         
         # Return a stand-in string for the result.
@@ -2394,7 +2394,7 @@ class RtlMoveMemory(VbaLibraryFunc):
         # Track the shellcode bytes.
         if (len(params) < 3):
             return
-        from core import vba_context
+        from vipermonkey.core import vba_context
         vba_context.add_shellcode_data(params[0], params[1], params[2])
         
 class GetByteCount_2(VbaLibraryFunc):
@@ -4218,7 +4218,7 @@ class OnTime(VbaLibraryFunc):
         except KeyError:
             log.warning("OnTime() callback function '" + callback_name + "' not found.")
             return "NULL"
-        from core import procedures
+        from vipermonkey.core import procedures
         if (not isinstance(callback, procedures.Function) and
             not isinstance(callback, procedures.Sub)):
             log.warning("OnTime() callback function '" + callback_name + "' found, but not a function.")
@@ -6537,7 +6537,7 @@ class WriteProcessMemory(VbaLibraryFunc):
         # Track the shellcode bytes.
         if (len(params) < 4):
             return
-        from core import vba_context
+        from vipermonkey.core import vba_context
         vba_context.add_shellcode_data(params[1], params[2], params[3])
         
 class Write(VbaLibraryFunc):

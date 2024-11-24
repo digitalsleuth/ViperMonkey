@@ -51,19 +51,19 @@ import re
 import sys
 import datetime
 
-from core.curses_ascii import isprint
+from vipermonkey.core.curses_ascii import isprint
 import pyparsing
 import logging
-from core.logger import log
+from vipermonkey.core.logger import log
 
-from core.utils import safe_print, safe_str_convert
-from core.vba_context import Context
-from core.vba_object import VBA_Object, VbaLibraryFunc
-from core.function_call_visitor import function_call_visitor
-from core import utils
-from core.lhs_var_visitor import lhs_var_visitor
-from core.var_in_expr_visitor import var_in_expr_visitor
-from core.let_statement_visitor import let_statement_visitor
+from vipermonkey.core.utils import safe_print, safe_str_convert
+from vipermonkey.core.vba_context import Context
+from vipermonkey.core.vba_object import VBA_Object, VbaLibraryFunc
+from vipermonkey.core.function_call_visitor import function_call_visitor
+from vipermonkey.core import utils
+from vipermonkey.core.lhs_var_visitor import lhs_var_visitor
+from vipermonkey.core.var_in_expr_visitor import var_in_expr_visitor
+from vipermonkey.core.let_statement_visitor import let_statement_visitor
 
 def _boilerplate_to_python(indent):
     """Get starting boilerplate code for VB to Python JIT code.
@@ -77,24 +77,24 @@ def _boilerplate_to_python(indent):
     """
     indent_str = " " * indent
     boilerplate = indent_str + "import traceback\n\n"
-    boilerplate += indent_str + "import core.vba_library\n"
-    boilerplate += indent_str + "import core.vba_context\n"
-    boilerplate += indent_str + "from core.utils import safe_print\n"
-    boilerplate += indent_str + "from core.utils import safe_str_convert\n"
-    boilerplate += indent_str + "from core.utils import plus\n"
-    boilerplate += indent_str + "from core.utils import eq\n"
-    boilerplate += indent_str + "from core.utils import neq\n"
-    boilerplate += indent_str + "from core.utils import lt\n"
-    boilerplate += indent_str + "from core.utils import lte\n"
-    boilerplate += indent_str + "from core.utils import gt\n"
-    boilerplate += indent_str + "from core.utils import gte\n"
-    boilerplate += indent_str + "from core.utils import bool_not\n"
-    boilerplate += indent_str + "import core.utils\n"
-    boilerplate += indent_str + "from core.python_jit import update_array\n"
-    boilerplate += indent_str + "from core.vba_conversion import coerce_to_num\n"
-    boilerplate += indent_str + "from core.vba_conversion import coerce_to_int\n"
-    boilerplate += indent_str + "from core.vba_conversion import coerce_to_str\n"
-    boilerplate += indent_str + "from core.vba_conversion import coerce_to_int_list\n\n"
+    boilerplate += indent_str + "import vipermonkey.core.vba_library\n"
+    boilerplate += indent_str + "import vipermonkey.core.vba_context\n"
+    boilerplate += indent_str + "from vipermonkey.core.utils import safe_print\n"
+    boilerplate += indent_str + "from vipermonkey.core.utils import safe_str_convert\n"
+    boilerplate += indent_str + "from vipermonkey.core.utils import plus\n"
+    boilerplate += indent_str + "from vipermonkey.core.utils import eq\n"
+    boilerplate += indent_str + "from vipermonkey.core.utils import neq\n"
+    boilerplate += indent_str + "from vipermonkey.core.utils import lt\n"
+    boilerplate += indent_str + "from vipermonkey.core.utils import lte\n"
+    boilerplate += indent_str + "from vipermonkey.core.utils import gt\n"
+    boilerplate += indent_str + "from vipermonkey.core.utils import gte\n"
+    boilerplate += indent_str + "from vipermonkey.core.utils import bool_not\n"
+    boilerplate += indent_str + "import vipermonkey.core.utils\n"
+    boilerplate += indent_str + "from vipermonkey.core.python_jit import update_array\n"
+    boilerplate += indent_str + "from vipermonkey.core.vba_conversion import coerce_to_num\n"
+    boilerplate += indent_str + "from vipermonkey.core.vba_conversion import coerce_to_int\n"
+    boilerplate += indent_str + "from vipermonkey.core.vba_conversion import coerce_to_str\n"
+    boilerplate += indent_str + "from vipermonkey.core.vba_conversion import coerce_to_int_list\n\n"
     boilerplate += indent_str + "try:\n"
     boilerplate += indent_str + " " * 4 + "vm_context\n"
     boilerplate += indent_str + "except (NameError, UnboundLocalError):\n"
@@ -117,7 +117,7 @@ def _get_local_func_type(expr, context):
     """
 
     # Sanity check.
-    from core import expressions
+    from vipermonkey.core import expressions
     if (not isinstance(expr, expressions.Function_Call)):
         return None
 
@@ -147,8 +147,8 @@ def _infer_type_of_expression(expr, context):
 
     """
 
-    from core import operators
-    from core import vba_library
+    from vipermonkey.core import operators
+    from vipermonkey.core import vba_library
 
     #print("LOOK FOR TYPE")
     #print(expr)
@@ -160,7 +160,7 @@ def _infer_type_of_expression(expr, context):
         return expr.return_type()
 
     # Call of function?
-    from core import expressions
+    from vipermonkey.core import expressions
     if (isinstance(expr, expressions.Function_Call)):
 
         # Call of builtin function?
@@ -278,8 +278,8 @@ def _get_var_vals(item, context, global_only=False):
 
     """
 
-    from core import procedures
-    from core import statements
+    from vipermonkey.core import procedures
+    from vipermonkey.core import statements
 
     # Get all the variables.
 
@@ -685,7 +685,7 @@ def _updated_vars_to_python(loop, context, indent):
     @return (str) Python JIT code.
 
     """
-    from core import statements
+    from vipermonkey.core import statements
     
     indent_str = " " * indent
     lhs_visitor = lhs_var_visitor()
@@ -964,7 +964,7 @@ def _eval_python(loop, context, params=None, add_boilerplate=False, namespace=No
             log.warning("No variables set by Python JIT code.")
 
         # Update shellcode bytes from the JIT emulation.
-        from core import vba_context
+        from vipermonkey.core import vba_context
         vba_context.shellcode = var_updates["__shell_code__"]
 
     except NotImplementedError as e:

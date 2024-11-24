@@ -93,25 +93,25 @@ import re
 from pyparsing import ParseException
 import prettytable
 
-from core.logger import log
-from core.procedures import Function
-from core.procedures import Sub
-from core.function_call_visitor import function_call_visitor
-from core.function_defn_visitor import function_defn_visitor
-from core.function_import_visitor import function_import_visitor
-from core.var_defn_visitor import var_defn_visitor
-from core import filetype
-from core import read_ole_fields
-from core.meta import FakeMeta
-from core.vba_lines import vba_collapse_long_lines
-from core.modules import module
+from vipermonkey.core.logger import log
+from vipermonkey.core.procedures import Function
+from vipermonkey.core.procedures import Sub
+from vipermonkey.core.function_call_visitor import function_call_visitor
+from vipermonkey.core.function_defn_visitor import function_defn_visitor
+from vipermonkey.core.function_import_visitor import function_import_visitor
+from vipermonkey.core.var_defn_visitor import var_defn_visitor
+from vipermonkey.core import filetype
+from vipermonkey.core import read_ole_fields
+from vipermonkey.core.meta import FakeMeta
+from vipermonkey.core.vba_lines import vba_collapse_long_lines
+from vipermonkey.core.modules import module
 # Make sure we populate the VBA Library:
-from core import vba_library
-from core.stubbed_engine import StubbedEngine
-from core import expressions
-from core import vba_context
-from core import excel
-from core.utils import safe_str_convert
+from vipermonkey.core import vba_library
+from vipermonkey.core.stubbed_engine import StubbedEngine
+from vipermonkey.core import expressions
+from vipermonkey.core import vba_context
+from vipermonkey.core import excel
+from vipermonkey.core.utils import safe_str_convert
 
 # === FUNCTIONS ==============================================================
 

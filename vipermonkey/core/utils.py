@@ -39,7 +39,7 @@ https://github.com/decalage2/ViperMonkey
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 import re
-from core.curses_ascii import isascii, isprint
+from vipermonkey.core.curses_ascii import isascii, isprint
 import base64
 import string
 
@@ -47,11 +47,11 @@ import logging
 
 # for logging
 try:
-    from core.logger import log
+    from vipermonkey.core.logger import log
 except ImportError:
     from logger import log
 try:
-    from core.logger import CappedFileHandler
+    from vipermonkey.core.logger import CappedFileHandler
 except ImportError:
     from logger import CappedFileHandler
 from logging import LogRecord
@@ -159,7 +159,7 @@ def safe_plus(x,y):
     """
 
     # Handle Excel Cell objects. Grrr.
-    from core import excel
+    from vipermonkey.core import excel
     if excel.is_cell_dict(x):
         x = x["value"]
     if excel.is_cell_dict(y):
@@ -182,7 +182,7 @@ def safe_plus(x,y):
     # casting (I think) minus variable type information (Dim a as
     # String: a = 1 + "3" gets "13", we're ignoring that here). Pure
     # garbage.
-    from core import vba_conversion
+    from vipermonkey.core import vba_conversion
     if (isinstance(x, str) and (not isinstance(y, str))):
         y = vba_conversion.str_convert(y)
     if (isinstance(x, int) and (not isinstance(y, int))):
@@ -299,7 +299,7 @@ def safe_gt(x,y):
         
     # Since we are doing > both values should be numbers.
     try:
-        from core.vba_conversion import coerce_to_num
+        from vipermonkey.core.vba_conversion import coerce_to_num
         x = coerce_to_num(x)
         y = coerce_to_num(y)
     except ValueError:

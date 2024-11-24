@@ -56,9 +56,9 @@ import string
 
 import olefile
 
-from core.logger import log
-from core import filetype
-from core.utils import safe_str_convert
+from vipermonkey.core.logger import log
+from vipermonkey.core import filetype
+from vipermonkey.core.utils import safe_str_convert
 
 _thismodule_dir = os.path.normpath(os.path.abspath(os.path.dirname(__file__)))
 

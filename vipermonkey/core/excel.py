@@ -45,11 +45,11 @@ __version__ = '0.03'
 
 #import traceback
 import sys
-from core.logger import log
+from vipermonkey.core.logger import log
 import logging
 import json
 import os
-from core import filetype
+from vipermonkey.core import filetype
 import random
 import re
 import subprocess
@@ -60,7 +60,7 @@ except ImportError:
     log.warning("xlrd2 Python package not installed. Falling back to xlrd.")
     import xlrd
     
-from core.utils import safe_str_convert
+from vipermonkey.core.utils import safe_str_convert
     
 _thismodule_dir = os.path.normpath(os.path.abspath(os.path.dirname(__file__)))
     

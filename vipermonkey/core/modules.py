@@ -56,22 +56,22 @@ pyparsing.ParserElement.setDefaultWhitespaceChars(' \t\x19')
 from pyparsing import Optional, ZeroOrMore, Forward, Suppress, \
     OneOrMore
 
-from core.comments_eol import rem_statement, EOL, EOS
-from core.procedures import function_end, function_start, sub_end, sub_start_line, \
+from vipermonkey.core.comments_eol import rem_statement, EOL, EOS
+from vipermonkey.core.procedures import function_end, function_start, sub_end, sub_start_line, \
     function, sub, Function, Sub, property_let, PropertyLet, property_get, \
     PropertyGet
-from core.statements import simple_statements_line, for_end, for_start, \
+from vipermonkey.core.statements import simple_statements_line, for_end, for_start, \
     type_declaration, simple_if_statement_macro, option_statement, \
     External_Function, do_const_assignments, external_function, attribute_statement, \
     Dim_Statement, Global_Var_Statement, Attribute_Statement, If_Statement_Macro, \
     simple_call_list, dim_statement, global_variable_declaration, \
     tagged_block, block_statement, orphaned_marker
-from core.function_defn_visitor import function_defn_visitor
-from core.vba_object import VBA_Object
-from core.python_jit import to_python
-from core.logger import log
-from core.expressions import expression, expr_const
-from core.utils import safe_str_convert
+from vipermonkey.core.function_defn_visitor import function_defn_visitor
+from vipermonkey.core.vba_object import VBA_Object
+from vipermonkey.core.python_jit import to_python
+from vipermonkey.core.logger import log
+from vipermonkey.core.expressions import expression, expr_const
+from vipermonkey.core.utils import safe_str_convert
 
 # === VBA MODULE AND STATEMENTS ==============================================
 

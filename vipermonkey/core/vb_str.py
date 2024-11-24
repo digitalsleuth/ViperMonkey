@@ -45,14 +45,14 @@ https://github.com/decalage2/ViperMonkey
 
 __version__ = '0.08'
 
-from core.curses_ascii import isprint
+from vipermonkey.core.curses_ascii import isprint
 try:
     # sudo pypy -m pip install rure
     import rure as re
 except ImportError:
     import re
 
-from core.utils import safe_str_convert
+from vipermonkey.core.utils import safe_str_convert
 
 def is_wide_str(the_str):
     """Test to see if the given string is a simple wide char string

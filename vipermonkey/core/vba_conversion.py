@@ -43,10 +43,10 @@ import re
 import string
 
 import logging
-from core.logger import log
+from vipermonkey.core.logger import log
 
-from core.utils import safe_str_convert
-import core.excel as excel
+from vipermonkey.core.utils import safe_str_convert
+import vipermonkey.core.excel as excel
 
 def int_convert(arg, leave_alone=False):
     """Convert a VBA expression to an int, handling VBA NULL.
@@ -112,7 +112,7 @@ def str_convert(arg):
     """
     if (arg == "NULL"):
         return ''
-    from core import excel
+    from vipermonkey.core import excel
     if (excel.is_cell_dict(arg)):
         arg = arg["value"]
     try:

@@ -43,7 +43,7 @@ https://github.com/decalage2/ViperMonkey
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-from core.visitor import visitor
+from vipermonkey.core.visitor import visitor
 
 class contains_statement_visitor(visitor):
     """Visitor for checking to see if a given set of statement types

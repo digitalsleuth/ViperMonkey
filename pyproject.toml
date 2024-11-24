@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools >= 61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+exclude = ["debian*", "binaries*", "build*", "dist*"]
+
+[project]
+name = "vipermonkey"
+version = "3.0.0"
+dependencies = [
+    "oletools",
+    "olefile",
+    "prettytable",
+    "colorlog",
+    "colorama",
+    "pyparsing",
+    "xlrd2",
+    "xlrd",
+    "unidecode",
+    "regex"
+]
+requires-python = ">=3.6"
+authors = [
+  {name = "Corey Forman (digitalsleuth)", email = "github@digitalsleuth.ca"}
+]
+maintainers = [
+  {name = "Corey Forman (digitalsleuth)", email = "github@digitalsleuth.ca"}
+]
+description = (
+        "ViperMonkey is a VBA Emulation engine written in Python, designed to "
+        "analyze and deobfuscate malicious VBA Macros contained in Microsoft "
+        "Office files (Word, Excel, PowerPoint, Publisher, etc).")
+readme = "README.md"
+keywords = ["digital forensics", "dfir", "malware", "vmonkey", "vipermonkey"]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Programming Language :: Python :: 3",
+#  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent"
+]
+
+[project.urls]
+Homepage = "https://github.com/digitalsleuth/vipermonkey"
+
+[project.scripts]
+vmonkey = "vipermonkey.vmonkey:main"
+vbashell = "vipermonkey.vbashell:main"

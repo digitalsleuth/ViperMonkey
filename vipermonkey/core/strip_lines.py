@@ -73,7 +73,7 @@ https://github.com/decalage2/ViperMonkey
 # TODO later:
 # - add VBS support (two modes?)
 
-from core.curses_ascii import isascii
+from vipermonkey.core.curses_ascii import isascii
 import logging
 import sys
 import re
@@ -83,12 +83,12 @@ try:
 except ImportError:
     # pylint: disable=reimported
     import re as re2
-from core.logger import log
-from core import vba_context
+from vipermonkey.core.logger import log
+from vipermonkey.core import vba_context
 from random import randint
-from core.vba_conversion import coerce_to_int
-from core import utils
-from core.utils import safe_str_convert
+from vipermonkey.core.vba_conversion import coerce_to_int
+from vipermonkey.core import utils
+from vipermonkey.core.utils import safe_str_convert
 
 #debug_strip = True
 debug_strip = False

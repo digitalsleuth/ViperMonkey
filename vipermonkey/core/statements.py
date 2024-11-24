@@ -65,40 +65,40 @@ from pyparsing import CaselessKeyword, Combine, delimitedList, FollowedBy, \
     ParseException, ParseResults, Regex, Suppress, White, ZeroOrMore, \
     CharsNotIn
 
-from core.identifiers import identifier, lex_identifier, TODO_identifier_or_object_attrib, \
+from vipermonkey.core.identifiers import identifier, lex_identifier, TODO_identifier_or_object_attrib, \
     TODO_identifier_or_object_attrib_loose, enum_val_id, unrestricted_name, \
     reserved_type_identifier, typed_name
-from core.literals import integer, quoted_string, literal, decimal_literal, \
+from vipermonkey.core.literals import integer, quoted_string, literal, decimal_literal, \
     quoted_string_keep_quotes
-from core.comments_eol import rem_statement, EOS
-from core.expressions import any_expression, boolean_expression, BoolExpr, expression, \
+from vipermonkey.core.comments_eol import rem_statement, EOS
+from vipermonkey.core.expressions import any_expression, boolean_expression, BoolExpr, expression, \
     file_pointer, function_call, Function_Call, member_access_expression, \
     MemberAccessExpression, simple_name_expression, SimpleNameExpression, \
     file_pointer_loose, expr_list, expr_const, expr_list_strict, \
     function_call_limited
-from core.vba_context import Context, is_procedure
-from core.reserved import reserved_complex_type_identifier
-from core.from_unicode_str import from_unicode_str
-from core.vba_object import eval_arg, eval_args, VbaLibraryFunc, VBA_Object
-from core.python_jit import _loop_vars_to_python, to_python, _updated_vars_to_python, _eval_python, \
+from vipermonkey.core.vba_context import Context, is_procedure
+from vipermonkey.core.reserved import reserved_complex_type_identifier
+from vipermonkey.core.from_unicode_str import from_unicode_str
+from vipermonkey.core.vba_object import eval_arg, eval_args, VbaLibraryFunc, VBA_Object
+from vipermonkey.core.python_jit import _loop_vars_to_python, to_python, _updated_vars_to_python, _eval_python, \
     enter_loop, exit_loop
-from core import procedures
-from core.var_in_expr_visitor import var_in_expr_visitor
-from core.contains_statement_visitor import contains_statement_visitor
-from core.function_call_visitor import function_call_visitor
-from core import vb_str
-from core import loop_transform
-from core import utils
-from core.utils import safe_str_convert
-from core import vba_conversion
-from core.expressions import expression
+from vipermonkey.core import procedures
+from vipermonkey.core.var_in_expr_visitor import var_in_expr_visitor
+from vipermonkey.core.contains_statement_visitor import contains_statement_visitor
+from vipermonkey.core.function_call_visitor import function_call_visitor
+from vipermonkey.core import vb_str
+from vipermonkey.core import loop_transform
+from vipermonkey.core import utils
+from vipermonkey.core.utils import safe_str_convert
+from vipermonkey.core import vba_conversion
+from vipermonkey.core.expressions import expression
 
 import traceback
-from core.logger import log
+from vipermonkey.core.logger import log
 import sys
 import re
 import base64
-from core.curses_ascii import isprint
+from vipermonkey.core.curses_ascii import isprint
 import hashlib
 
 def is_simple_statement(s):
@@ -4624,7 +4624,7 @@ class Call_Statement(VBA_Object):
         func_name = safe_str_convert(self.name)
         if ("." in func_name):
             func_name = func_name[func_name.index(".") + 1:]
-        from core import vba_library
+        from vipermonkey.core import vba_library
         is_internal = (func_name.lower() in vba_library.VBA_LIBRARY)
         if (is_internal or is_external):
 
@@ -4782,7 +4782,7 @@ class Call_Statement(VBA_Object):
             return None
 
         # Save the unresolved argument values.
-        from core import vba_library
+        from vipermonkey.core import vba_library
         vba_library.var_names = self.params
         
         # Reset the called function name if this is an alias for an imported external

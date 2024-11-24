@@ -52,11 +52,11 @@ __version__ = '0.03'
 import logging
 from collections import Iterable
 
-from core.vba_object import eval_args, VBA_Object
-from core.python_jit import to_python
-from core.logger import log
-from core.utils import safe_str_convert
-from core import vba_conversion
+from vipermonkey.core.vba_object import eval_args, VBA_Object
+from vipermonkey.core.python_jit import to_python
+from vipermonkey.core.logger import log
+from vipermonkey.core.utils import safe_str_convert
+from vipermonkey.core import vba_conversion
 
 def debug_repr(op, args):
     """Represent an operator applied to a list of arguments as a string

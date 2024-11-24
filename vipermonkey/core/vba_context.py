@@ -50,7 +50,7 @@ import logging
 import os
 from hashlib import sha256
 from datetime import datetime
-from core.logger import log
+from vipermonkey.core.logger import log
 import re
 try:
     # sudo pypy -m pip install rure
@@ -64,10 +64,10 @@ import codecs
 import copy
 import struct
 
-from core import vba_constants
-from core import utils
-from core.utils import safe_str_convert
-from core import excel
+from vipermonkey.core import vba_constants
+from vipermonkey.core import utils
+from vipermonkey.core.utils import safe_str_convert
+from vipermonkey.core import excel
 
 def to_hex(s):
     """Convert a string to a VBA hex string.
@@ -1897,8 +1897,8 @@ class Context(object):
             return False
         
         # Are we setting a cell formula?
-        from core import expressions
-        from core import vba_object
+        from vipermonkey.core import expressions
+        from vipermonkey.core import vba_object
         if (not isinstance(name, expressions.MemberAccessExpression)):
             return False
         tmp_rhs = safe_str_convert(name.rhs)
@@ -1957,7 +1957,7 @@ class Context(object):
 
         """
 
-        from core import procedures
+        from vipermonkey.core import procedures
         
         # Do we know the value of the variable?
         if (not self.contains(name)):
@@ -1989,7 +1989,7 @@ class Context(object):
 
         # This should be a MemberAccessExpression if it is a
         # System.PrivateProfileString() assignment.
-        from core import expressions
+        from vipermonkey.core import expressions
         if (not isinstance(name, expressions.MemberAccessExpression)):
             return False
 
@@ -2221,8 +2221,8 @@ class Context(object):
             try:
 
                 # Is this a Microsoft.XMLDOM object?
-                from core import vba_object
-                from core import expressions
+                from vipermonkey.core import vba_object
+                from vipermonkey.core import expressions
                 node_type = orig_name
                 if (isinstance(orig_name, expressions.MemberAccessExpression)):
                     node_type = orig_name.lhs

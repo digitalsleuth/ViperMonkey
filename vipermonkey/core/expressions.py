@@ -65,23 +65,23 @@ from pyparsing import CaselessKeyword, CaselessLiteral, Combine, FollowedBy, For
     Suppress, White, Word, ZeroOrMore, delimitedList
 import pyparsing
 
-from core.identifiers import lex_identifier, reserved_identifier, TODO_identifier_or_object_attrib, \
+from vipermonkey.core.identifiers import lex_identifier, reserved_identifier, TODO_identifier_or_object_attrib, \
     strict_reserved_keywords, unrestricted_name, enum_val_id, identifier, typed_name, \
     TODO_identifier_or_object_attrib_loose
-from core.lib_functions import StrReverse, Environ, Asc, Chr, chr_, asc, expression, strReverse
-from core.literals import date_string, decimal_literal, float_literal, literal, \
+from vipermonkey.core.lib_functions import StrReverse, Environ, Asc, Chr, chr_, asc, expression, strReverse
+from vipermonkey.core.literals import date_string, decimal_literal, float_literal, literal, \
     quoted_string_keep_quotes, integer, quoted_string
-from core.operators import AddSub, And, Concatenation, Eqv, FloorDivision, Mod, MultiDiv, Neg, \
+from vipermonkey.core.operators import AddSub, And, Concatenation, Eqv, FloorDivision, Mod, MultiDiv, Neg, \
     Not, Or, Power, Sum, Xor
-from core import procedures
-from core.vba_object import eval_arg, eval_args, VbaLibraryFunc, VBA_Object
-from core.python_jit import to_python
-from core import vba_context
-from core import utils
-from core import vba_conversion
-from core.utils import safe_str_convert
+from vipermonkey.core import procedures
+from vipermonkey.core.vba_object import eval_arg, eval_args, VbaLibraryFunc, VBA_Object
+from vipermonkey.core.python_jit import to_python
+from vipermonkey.core import vba_context
+from vipermonkey.core import utils
+from vipermonkey.core import vba_conversion
+from vipermonkey.core.utils import safe_str_convert
 
-from core.logger import log
+from vipermonkey.core.logger import log
 
 def _is_numeric_op(op):
     """See if a given VBA boolean operator expects numeric operands.
@@ -209,7 +209,7 @@ class SimpleNameExpression(VBA_Object):
         
         # Is this a 0 argument builtin function call? Make sure this is not a
         # local variable shadowing the name of a VBA builtin.
-        from core import vba_library
+        from vipermonkey.core import vba_library
         if ((self.name.lower() in vba_library.VBA_LIBRARY) and
             (isinstance(value, VbaLibraryFunc)) and
             (value.num_args() == 0)):
@@ -234,7 +234,7 @@ class SimpleNameExpression(VBA_Object):
     def eval(self, context, params=None):
         params = params # pylint warning
         
-        from core import statements
+        from vipermonkey.core import statements
         
         if (log.getEffectiveLevel() == logging.DEBUG):
             log.debug('try eval variable/function %r' % self.name)
@@ -518,7 +518,7 @@ class MemberAccessExpression(VBA_Object):
         # SpecialCells(xlCellTypeConstants)
         # SpecialCells(xlCellTypeConstants, UsedRange())
         # SpecialCells(xlCellTypeConstants, UsedRange(Sheets(d)))
-        from core import vba_library
+        from vipermonkey.core import vba_library
         
         # Load elements of the member access expression onto a stack.
         obj_stack = []
@@ -1478,7 +1478,7 @@ class MemberAccessExpression(VBA_Object):
             rhs = rhs[0]
         if (safe_str_convert(rhs) != "Close"):
             return None
-        from core.vba_library import Close
+        from vipermonkey.core.vba_library import Close
         file_close = Close()
             
         # File closed.
@@ -4087,7 +4087,7 @@ class Function_Call(VBA_Object):
     def eval(self, context, params=None):
 
         # Save the unresolved argument values.
-        from core import vba_library
+        from vipermonkey.core import vba_library
         vba_library.var_names = self.params
         
         if (log.getEffectiveLevel() == logging.DEBUG):
@@ -4336,7 +4336,7 @@ class Function_Call(VBA_Object):
         context.in_bitwise_expression = old_bitwise
 
         # Is this a VBA internal function? Or a call to an external function?
-        from core import vba_library
+        from vipermonkey.core import vba_library
         is_internal = (func_name.lower() in vba_library.VBA_LIBRARY)
         if (is_internal or is_external):
 

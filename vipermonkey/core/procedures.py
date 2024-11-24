@@ -57,22 +57,22 @@ pyparsing.ParserElement.setDefaultWhitespaceChars(' \t\x19')
 from pyparsing import CaselessKeyword, Group, Optional, Suppress, \
     ZeroOrMore, Literal
 
-from core.vba_context import Context
-from core.statements import extend_statement_grammar, public_private, simple_statements_line, \
+from vipermonkey.core.vba_context import Context
+from vipermonkey.core.statements import extend_statement_grammar, public_private, simple_statements_line, \
     bogus_simple_for_each_statement, do_const_assignments, Do_Statement, While_Statement, \
     For_Each_Statement, For_Statement, FollowedBy, Combine, params_list_paren, bad_next_statement, \
     bad_if_statement, statements_line, function_type2, type_expression
-from core.identifiers import lex_identifier, identifier, TODO_identifier_or_object_attrib, \
+from vipermonkey.core.identifiers import lex_identifier, identifier, TODO_identifier_or_object_attrib, \
     type_suffix
-from core.comments_eol import EOS, comment_single_quote, rem_statement
-from core.vba_lines import line_terminator
-from core import utils
-from core.utils import safe_str_convert
-from core.logger import log
-from core.tagged_block_finder_visitor import tagged_block_finder_visitor
-from core.vba_object import VBA_Object, eval_arg
-from core.python_jit import to_python, _check_for_iocs, _get_var_vals
-from core import vba_conversion
+from vipermonkey.core.comments_eol import EOS, comment_single_quote, rem_statement
+from vipermonkey.core.vba_lines import line_terminator
+from vipermonkey.core import utils
+from vipermonkey.core.utils import safe_str_convert
+from vipermonkey.core.logger import log
+from vipermonkey.core.tagged_block_finder_visitor import tagged_block_finder_visitor
+from vipermonkey.core.vba_object import VBA_Object, eval_arg
+from vipermonkey.core.python_jit import to_python, _check_for_iocs, _get_var_vals
+from vipermonkey.core import vba_conversion
 
 # Track the depth of functions we are working on in to_python() calls.
 # This is used to figure out whether we need to add python global statements
@@ -150,7 +150,7 @@ class Sub(VBA_Object):
         r += indent_str + "def " + safe_str_convert(self.name) + func_args + ":\n"
 
         # Init return value.
-        r += indent_str + " " * 4 + "import core.vba_library\n"
+        r += indent_str + " " * 4 + "import vipermonkey.core.vba_library\n"
         r += indent_str + " " * 4 + "global vm_context\n\n"
         r += indent_str + " " * 4 + "# Function return value.\n"
         r += indent_str + " " * 4 + safe_str_convert(self.name) + " = 0\n\n"
@@ -538,7 +538,7 @@ class Function(VBA_Object):
             r += indent_str + " " * 4 + "print(" + func_args + ")\n"
         
         # Init return value.
-        r += indent_str + " " * 4 + "import core.vba_library\n"
+        r += indent_str + " " * 4 + "import vipermonkey.core.vba_library\n"
         r += indent_str + " " * 4 + "global vm_context\n\n"
         r += indent_str + " " * 4 + "# Function return value.\n"
         r += indent_str + " " * 4 + safe_str_convert(self.name) + " = 0\n\n"

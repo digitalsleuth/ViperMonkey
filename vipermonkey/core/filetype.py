@@ -43,8 +43,8 @@ https://github.com/decalage2/ViperMonkey
 import logging
 import subprocess
 
-from core.logger import log
-from core.utils import safe_str_convert
+from vipermonkey.core.logger import log
+from vipermonkey.core.utils import safe_str_convert
 
 # Office magic numbers.
 magic_nums = {
