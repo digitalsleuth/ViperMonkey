@@ -876,7 +876,7 @@ def _save_embedded_files(out_dir, vm):
     if (not os.path.exists(out_dir)):
         log.info("Making dropped sample directory ...")
         os.mkdir(out_dir)
-
+    
     # Save each file.
     for file_info in vm.embedded_files:
         short_name = safe_str_convert(file_info[0])
@@ -889,7 +889,7 @@ def _save_embedded_files(out_dir, vm):
             f.close()
         except IOError as e:
             log.error("Saving embedded file " + long_name + " failed. " + str(e))
-
+            
 # Wrapper for original function; from here out, only data is a valid variable.
 # filename gets passed in _temporarily_ to support dumping to vba_context.out_dir = out_dir.
 def _process_file (filename,

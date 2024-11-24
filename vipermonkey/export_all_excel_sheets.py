@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+##!/usr/bin/env -S python3 -E
 
 """@package vipermonkey.export_all_excel_sheets Export all of the
 sheets of an Excel file as separate CSV files. This is Python 3.
@@ -243,7 +244,7 @@ def convert_csv(fname):
     # Bomb out if this is not an Excel file.
     if (not hasattr(component, "getSheets")):
         return r
-
+        
     # Iterate on all the sheets in the spreadsheet.
     sheets = component.getSheets()
     enumeration = sheets.createEnumeration()

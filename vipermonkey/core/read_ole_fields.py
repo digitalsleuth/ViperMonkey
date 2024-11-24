@@ -50,14 +50,15 @@ import re
 import random
 import os
 import sys
+import traceback
 from collections import Counter
 import string
 
 import olefile
 
-from logger import log
-import filetype
-from utils import safe_str_convert
+from vipermonkey.core.logger import log
+from vipermonkey.core import filetype
+from vipermonkey.core.utils import safe_str_convert
 
 _thismodule_dir = os.path.normpath(os.path.abspath(os.path.dirname(__file__)))
 
@@ -75,6 +76,11 @@ def is_garbage_vba(vba, test_all=False, bad_pct=.6, no_html=False):
     @param bad_pct (float) The max ratio of bad code to all code for
     this to be considered to be bad (i.e. percent bad divided by
     100).
+
+    @param no_html (boolean) Treat HTML as garbage if True.
+
+    @return (boolean) True if the VBA code is garbage, False if it might
+    be good.
 
     """
 
@@ -122,18 +128,19 @@ def is_garbage_vba(vba, test_all=False, bad_pct=.6, no_html=False):
 def pull_base64(data):
     """Pull base64 strings from some data.
 
-    @param data (str) The data from which to extract base64 strings.
+    @param data (bytes) The data from which to extract base64 strings.
     
     @return (list) A list of base64 strings found in the input.
 
     """
 
     # Pull out strings that might be base64.
-    base64_pat_loose = r"[A-Za-z0-9+/=]{40,}"
+    base64_pat_loose = br"[A-Za-z0-9+/=]{40,}"
     all_strs = set(re.findall(base64_pat_loose, data))
     r = set()
     for curr_value in all_strs:
         if (len(curr_value) > 100):
+            curr_value = safe_str_convert(curr_value)
             r.add(curr_value)
             log.info("Found possible intermediate IOC (base64): '" + curr_value + "'")
     return list(r)
@@ -141,7 +148,7 @@ def pull_base64(data):
 def unzip_data(data):
     """Unzip zipped data in memory.
 
-    @param data (str) The data to unzip.
+    @param data (bytes) The data to unzip.
 
     @return (tuple) A 2 element tuple where the 1st element is the
     unzipped data and the 2nd element is the name of a temp file used
@@ -152,7 +159,7 @@ def unzip_data(data):
 
     # Unzip the data.
     # PKZip magic #: 50 4B 03 04
-    zip_magic = chr(0x50) + chr(0x4B) + chr(0x03) + chr(0x04)
+    zip_magic = (chr(0x50) + chr(0x4B) + chr(0x03) + chr(0x04)).encode("latin-1")
     delete_file = False
     fname = None
     if data.startswith(zip_magic):
@@ -192,17 +199,19 @@ def _clean_2007_text(s):
     """Replace special 2007 formatting strings (XML escaped, etc.) with
     actual text.
 
-    @param s (str) The string to clean.
+    @param s (str or bytes) The string to clean.
 
-    @return (str) The cleaned string.
+    @return (bytes) The cleaned string.
 
-    """    
-    s = s.replace("&amp;", "&")\
-         .replace("&gt;", ">")\
-         .replace("&lt;", "<")\
-         .replace("&apos;", "'")\
-         .replace("&quot;", '"')\
-         .replace("_x000d_", "\r")
+    """
+    if isinstance(s, str):
+        s = s.encode("latin-1")
+    s = s.replace(b"&amp;", b"&")\
+         .replace(b"&gt;", b">")\
+         .replace(b"&lt;", b"<")\
+         .replace(b"&apos;", b"'")\
+         .replace(b"&quot;", b'"')\
+         .replace(b"_x000d_", b"\r")
     
     return s
 
@@ -210,7 +219,7 @@ def get_drawing_titles(data):
     """Read custom Drawing element title values from an Office 2007+
     file.
     
-    @param data (str) The read in Office 2007+ file (data).
+    @param data (bytes) The read in Office 2007+ file (data).
 
     @return (list) A list of 2 element tuples where the 1st tuple
     element is the name of the drawing element and the 2nd element is
@@ -250,7 +259,7 @@ def get_drawing_titles(data):
     
     # <wp:docPr id="1" name="the name" title="the title text"/>
     # Find all the drawing titles.
-    pat = r"<wp\:docPr id=\"(\d+)\" name=\"([^\"]*)\" title=\"([^\"]*)\""
+    pat = br"<wp\:docPr id=\"(\d+)\" name=\"([^\"]*)\" title=\"([^\"]*)\""
     if (re.search(pat, contents) is None):
         return []
     drawings = re.findall(pat, contents)
@@ -258,18 +267,18 @@ def get_drawing_titles(data):
     # Return the text as Shapes(NN) variables.
     r = []
     for drawing_info in drawings:
-        drawing_id = drawing_info[0]
-        drawing_text = _clean_2007_text(drawing_info[2])
+        drawing_id = safe_str_convert(drawing_info[0])
+        drawing_text = safe_str_convert(_clean_2007_text(drawing_info[2]))
         var_name = "Shapes('" + drawing_id + "')"
         r.append((var_name, drawing_text))
 
     # Done.
-    return r
+    return _make_elems_str(r)
 
 def get_defaulttargetframe_text(data):
     """Read custom DefaultTargetFrame value from an Office 2007+ file.
 
-    @param data (str) The read in Office 2007+ file (data).
+    @param data (bytes) The read in Office 2007+ file (data).
 
     @return (str) On success return the DefaultTargetFrame value. On
     error return None.
@@ -309,16 +318,137 @@ def get_defaulttargetframe_text(data):
     # <vt:lpwstr>custom value</vt:lpwstr>
     # Pull out the DefaultTargetFrame string value. This assumes that DefaultTargetFrame
     # is the only value stored in custom.xml.
-    pat = r"<vt:lpwstr>([^<]+)</vt:lpwstr>"
+    pat = br"<vt:lpwstr>([^<]+)</vt:lpwstr>"
     if (re.search(pat, contents) is None):
         return None
     r = _clean_2007_text(re.findall(pat, contents)[0])
     return r
 
+def _get_shape_names(data):
+    """Read the names of embedded Shapes elements in a 2007+ Excel file.
+
+    @param data (bytes) The read in Office 2007+ file (data).
+
+    @return (dict) On success return a map from Shape ID (int) to name
+    (str), on failure return None.
+
+    """
+
+    # We can only do this with 2007+ files.
+    if (not filetype.is_office2007_file(data, True)):
+        return None
+
+    # Unzip the file contents.
+    unzipped_data, fname = unzip_data(data)
+    delete_file = (fname is not None)
+    if (unzipped_data is None):
+        return None
+
+    # Pull out xl/drawings/*.xml files, if they are there.
+    drawing_files = set()
+    name_pat = r"xl[/\\]drawings[/\\][^\./\\]{1,100}\.xml"
+    for curr_file in unzipped_data.namelist():
+        if (re.search(name_pat, curr_file) is not None):
+            drawing_files.add(curr_file)
+
+    # Process each drawing XML file.
+    r = {}
+    for drawing_file in drawing_files:
+
+        # Read in the current drawing file.
+        f1 = unzipped_data.open(drawing_file)
+        contents = f1.read()
+        f1.close()
+    
+        # <xdr:cNvPr id="2" name="TextBox 1" hidden="1">
+        # Pull out the Shape ID and name.
+        pat = br"<xdr:cNvPr id=\"(\d{1,100})\" name=\"([^\"]{0,1000})\""
+        if (re.search(pat, contents) is not None):
+
+            # Save the IDs and Shape names.
+            for shape_info in re.findall(pat, contents):
+                shape_id = int(shape_info[0]) - 1
+                shape_name = shape_info[1]
+                r[shape_id] = safe_str_convert(shape_name)
+
+    # Delete the temporary Office file.
+    if (delete_file):
+        # Need to close the zipfile first, otherwise os.remove fails on Windows
+        unzipped_data.close()
+        os.remove(fname)
+    
+    # Done
+    return r
+
+def _get_shape_textframe_chars(data):
+    """Read the TextFrame strings of embedded Shapes elements in a 2007+
+    Excel file.
+
+    @param data (bytes) The read in Office 2007+ file (data).
+
+    @return (dict) On success return a map from Shape ID (int) to
+    TextFrame.Characters string (str), on failure return None.
+
+    """
+
+    # We can only do this with 2007+ files.
+    if (not filetype.is_office2007_file(data, True)):
+        return None
+
+    # Unzip the file contents.
+    unzipped_data, fname = unzip_data(data)
+    delete_file = (fname is not None)
+    if (unzipped_data is None):
+        return None
+
+    # Pull out xl/drawings/*.xml files, if they are there.
+    drawing_files = set()
+    name_pat = r"xl[/\\]drawings[/\\][^\./\\]{1,100}\.xml"
+    for curr_file in unzipped_data.namelist():
+        if (re.search(name_pat, curr_file) is not None):
+            drawing_files.add(curr_file)
+
+    # Process each drawing XML file.
+    r = {}
+    for drawing_file in drawing_files:
+
+        # Read in the current drawing file.
+        f1 = unzipped_data.open(drawing_file)
+        contents = f1.read()
+        f1.close()
+    
+        # <xdr:cNvPr id="2" name="TextBox 1" hidden="1">
+        # ......
+        #       <xdr:txBody>
+        #         <a:bodyPr vertOverflow="clip" horzOverflow="clip" vert="horz" rtlCol="0" anchor="t"/>
+        #         <a:lstStyle/>
+        #         <a:p>
+        #           <a:r>
+        #             <a:rPr lang="en-US" sz="1100"/>
+        #             <a:t>SAVE THIS STUFF</a:t>        
+        # Pull out the Shape ID and TextFrame.Characters text.
+        pat = br"<xdr:cNvPr id=\"(\d{1,100})\".+<xdr:txBody>.+<a:t>([^<]+)</a:t>"
+        if (re.search(pat, contents, re.DOTALL) is not None):
+
+            # Save the IDs and Shape TextFrame text.
+            for shape_info in re.findall(pat, contents, re.DOTALL):
+                shape_id = int(shape_info[0]) - 1
+                shape_text = shape_info[1]
+                r[shape_id] = safe_str_convert(shape_text)
+
+    # Delete the temporary Office file.
+    if (delete_file):
+        # Need to close the zipfile first, otherwise os.remove fails on Windows
+        unzipped_data.close()
+        os.remove(fname)
+    
+    # Done
+    return r
+
 def get_customxml_text(data):
     """Read custom CustomXMLParts text values from an Office 2007+ file.
 
-    @param data (str) The read in Office 2007+ file (data).
+    @param data (bytes) The read in Office 2007+ file (data).
 
     @return (list) A list of 2 element tuples where the 1st tuple
     element is the name of the custom XML part and the 2nd element is
@@ -354,7 +484,7 @@ def get_customxml_text(data):
     
         # <Item1>VALUE HERE</Item1>
         # Pull out the string value.
-        pat = r"<Item\d+>([^<]+)</Item\d+>"
+        pat = br"<Item\d+>([^<]+)</Item\d+>"
         if (re.search(pat, contents) is None):
             continue
         txt_val = _clean_2007_text(re.findall(pat, contents)[0])
@@ -372,14 +502,14 @@ def get_customxml_text(data):
         os.remove(fname)
 
     # Return the results.
-    return r
+    return _make_elems_str(r)
     
 def get_msftedit_variables_97(data):
     """Looks for variable/text value pairs stored in an embedded rich
     edit control from an Office 97 doc. See
     https://docs.microsoft.com/en-us/windows/win32/controls/about-rich-edit-controls.
 
-    @param data (str) The read in Office 97 file (data).
+    @param data (bytes) The read in Office 97 file (data).
 
     @return (list) A list of 2 element tuples where the 1st tuple
     element is the name of the rich edit control variable and the 2nd
@@ -388,22 +518,22 @@ def get_msftedit_variables_97(data):
     """
 
     # Pattern for the object data
-    pat = r"'\x01\xff\xff\x03.+?\x5c\x00\x70\x00\x61\x00\x72\x00\x0d\x00\x0a\x00\x7d"
+    pat = br"'\x01\xff\xff\x03.+?\x5c\x00\x70\x00\x61\x00\x72\x00\x0d\x00\x0a\x00\x7d"
     r = []
     for chunk in re.findall(pat, data, re.DOTALL):
 
         # Names and values are wide character strings. Strip out the null bytes.
-        chunk = chunk.replace("\x00", "")
+        chunk = chunk.replace(b"\x00", b"")
     
         # Pull out the name of the current thing .
 
         # Marker 1
-        name_pat = r"'\x01\xff\xff\x03\x92\x03\x04([A-Za-z0-9_]+)"
+        name_pat = br"'\x01\xff\xff\x03\x92\x03\x04([A-Za-z0-9_]+)"
         names = re.findall(name_pat, chunk)
 
         # Punt if no names found and just pull out everything that looks like it might be a name.
         if (len(names) != 1):
-            name_pat = r"([A-Za-z0-9_]+)"
+            name_pat = br"([A-Za-z0-9_]+)"
             tmp = re.findall(name_pat, chunk)
             names = []
             for poss_name in tmp:
@@ -411,7 +541,7 @@ def get_msftedit_variables_97(data):
                     names.append(poss_name)
         
         # Pull out the data for the current thing.
-        data_pat = r"\\fs\d{1,3} (.+)\\par"
+        data_pat = br"\\fs\d{1,3} (.+)\\par"
         chunk_data = re.findall(data_pat, chunk, re.DOTALL)
         if (len(chunk_data) != 1):
             continue
@@ -422,14 +552,14 @@ def get_msftedit_variables_97(data):
             r.append((chunk_name, chunk_data))
 
     # Done.
-    return r
+    return _make_elems_str(r)
 
 def get_msftedit_variables(obj):
     """Looks for variable/text value pairs stored in an embedded rich edit
     control from an Office 97 or 2007+ doc.  See
     https://docs.microsoft.com/en-us/windows/win32/controls/about-rich-edit-controls.
 
-    @param data (str) The read in Office 97 or 2007+ file (data).
+    @param data (bytes) The read in Office 97 or 2007+ file (data).
 
     @return (list) A list of 2 element tuples where the 1st tuple
     element is the name of the rich edit control variable and the 2nd
@@ -450,6 +580,8 @@ def get_msftedit_variables(obj):
         except IOError:
             data = obj
         except TypeError:
+            data = obj
+        except ValueError:
             data = obj
 
     # Is this an Office 97 file?
@@ -504,7 +636,7 @@ def entropy(text):
         except KeyError:
             exr[each]=1
     textlen=len(text)
-    for _,v in exr.items():
+    for _,v in list(exr.items()):
         freq  =  1.0*v/textlen
         infoc+=freq*log2(freq)
     infoc*=-1
@@ -513,45 +645,45 @@ def entropy(text):
 
 # There is some MS cruft strings that should be eliminated from the
 # strings pulled from the chunk.
-cruft_pats = [r'Microsoft Forms 2.0 Form',
-              r'Embedded Object',
-              r'CompObj',
-              r'VBFrame',
-              r'VERSION [\d\.]+\r\nBegin {[\w\-]+} \w+ \r\n\s+Caption\s+=\s+"UserForm1"\r\n\s+ClientHeight\s+=\s+\d+\r\n' + \
-              r'\s+ClientLeft\s+=\s+\d+\r\n\s+ClientTop\s+=\s+\d+\r\n\s+ClientWidth\s+=\s+\d+\r\n' + \
-              r'\s+StartUpPosition\s+=\s+\d+\s+\'CenterOwner\r\n\s+TypeInfoVer\s+=\s+\d+\r\nEnd\r\n',
-              r'DEFAULT',
-              r'InkEdit\d+',
-              r'MS Sans Serif',
-              r'\{\\rtf1\\ansi\\ansicpg\d+\\deff\d+\\deflang\d+\{\\fonttbl\{\\f\d+\\f\w+\\fcharset\d+.+;\}\}',
-              r'{\\\*\\generator [\w\d\. ]+;}\\[\d\w]+\\[\d\w]+\\[\d\w]+\\[\d\w]+\\[\d\w]+ ',
-              r'\\par',
-              r'HelpContextID="\d+"',
-              r'VersionCompatible\d+="\d+"',
-              r'CMG="[A-Z0-9]+"',
-              r'DPB="[A-Z0-9]+"',
-              r'GC="[A-Z0-9]+"',
-              r'\[Host Extender Info\]',
-              r'&H\d+=\{[A-Z0-9]+\-[A-Z0-9]+\-[A-Z0-9]+\-[A-Z0-9]+\-[A-Z0-9]+\};VBE;&H\d+',
-              r'&H\d+=\{[A-Z0-9]+\-[A-Z0-9]+\-[A-Z0-9]+\-[A-Z0-9]+\-[A-Z0-9]+\};Word\d.\d;&H\d+',
-              r'\[Workspace\]',
-              r'http://schemas.openxmlformats.org/\w+/\w+/\w+',
-              r'Root Entry',
-              r'Data',
-              r'WordDocument',
-              r'ObjectPool',
+cruft_pats = [br'Microsoft Forms 2.0 Form',
+              br'Embedded Object',
+              br'CompObj',
+              br'VBFrame',
+              br'VERSION [\d\.]+\r\nBegin {[\w\-]+} \w+ \r\n\s+Caption\s+=\s+"UserForm1"\r\n\s+ClientHeight\s+=\s+\d+\r\n' + \
+              br'\s+ClientLeft\s+=\s+\d+\r\n\s+ClientTop\s+=\s+\d+\r\n\s+ClientWidth\s+=\s+\d+\r\n' + \
+              br'\s+StartUpPosition\s+=\s+\d+\s+\'CenterOwner\r\n\s+TypeInfoVer\s+=\s+\d+\r\nEnd\r\n',
+              br'DEFAULT',
+              br'InkEdit\d+',
+              br'MS Sans Serif',
+              br'\{\\rtf1\\ansi\\ansicpg\d+\\deff\d+\\deflang\d+\{\\fonttbl\{\\f\d+\\f\w+\\fcharset\d+.+;\}\}',
+              br'{\\\*\\generator [\w\d\. ]+;}\\[\d\w]+\\[\d\w]+\\[\d\w]+\\[\d\w]+\\[\d\w]+ ',
+              br'\\par',
+              br'HelpContextID="\d+"',
+              br'VersionCompatible\d+="\d+"',
+              br'CMG="[A-Z0-9]+"',
+              br'DPB="[A-Z0-9]+"',
+              br'GC="[A-Z0-9]+"',
+              br'\[Host Extender Info\]',
+              br'&H\d+=\{[A-Z0-9]+\-[A-Z0-9]+\-[A-Z0-9]+\-[A-Z0-9]+\-[A-Z0-9]+\};VBE;&H\d+',
+              br'&H\d+=\{[A-Z0-9]+\-[A-Z0-9]+\-[A-Z0-9]+\-[A-Z0-9]+\-[A-Z0-9]+\};Word\d.\d;&H\d+',
+              br'\[Workspace\]',
+              br'http://schemas.openxmlformats.org/\w+/\w+/\w+',
+              br'Root Entry',
+              br'Data',
+              br'WordDocument',
+              br'ObjectPool',
 ]
 
 def _read_chunk(anchor, pat, data):
     """Read in delimited chunks of data based on an anchor at the start
     of the chunk and a pattern for recognizing a chunk.
 
-    @param anchor (str) The anchor string at the start of the chunk to
+    @param anchor (bytes) The anchor string at the start of the chunk to
     identify.
 
-    @param pat (str) The regex pattern for identifying a chunk.
+    @param pat (bytes) The regex pattern for identifying a chunk.
 
-    @param data (str) The data from which to pull chunks.
+    @param data (bytes) The data from which to pull chunks.
 
     @return (list) A list of recognized chunks (str).
 
@@ -592,9 +724,9 @@ def _get_field_names(vba_code, debug):
     # Eliminate any obviously bad names.
     object_names = clean_names(object_names)            
     if debug:
-        print "\nget_ole_textbox_values2()"
-        print "\nNames from VBA code:"
-        print object_names
+        print("\nget_ole_textbox_values2()")
+        print("\nNames from VBA code:")
+        print(object_names)
             
     # Break out the variables from which we want control tip text and non-control tip text variables.
     control_tip_var_names = set()
@@ -614,7 +746,7 @@ def _read_large_chunk(data, debug):
     Pull out a chunk of raw data containing mappings from object names to
     object text values.
 
-    @param data (str) The Office 97 file data from which to pull an
+    @param data (bytes) The Office 97 file data from which to pull an
     object name/value chunk.
 
     @param debug (boolean) A flag indicating whether to print debug
@@ -625,44 +757,42 @@ def _read_large_chunk(data, debug):
 
     # Read in the large chunk of data with the object names and string values.
     # chunk_pats are (anchor string, full chunk regex).
-    chunk_pats = [('ID="{',
-                   r'ID="\{.{20,}(?:UserForm\d{1,10}=\d{1,10}, \d{1,10}, \d{1,10}, \d{1,10}, ' + \
-                   r'\w{1,10}, \d{1,10}, \d{1,10}, \d{1,10}, \d{1,10}, \r\n){1,10}(.+?)Microsoft Forms '),
-                  ('\x05\x00\x00\x00\x17\x00',
-                   r'\x05\x00\x00\x00\x17\x00(.*)(?:(?:Microsoft Forms 2.0 Form)|(?:ID="{))'),
-                  ('\xd7\x8c\xfe\xfb',
-                   r'\xd7\x8c\xfe\xfb(.*)(?:(?:Microsoft Forms 2.0 Form)|(?:ID="{))'),
-                  ('\x00V\x00B\x00F\x00r\x00a\x00m\x00e\x00',
-                   r'\x00V\x00B\x00F\x00r\x00a\x00m\x00e\x00(.*)(?:(?:Microsoft Forms 2.0 (?:Form|Frame))|(?:ID="\{))')]
+    chunk_pats = [(b'ID="{',
+                   br'ID="\{.{20,}(?:UserForm\d{1,10}=\d{1,10}, \d{1,10}, \d{1,10}, \d{1,10}, ' + \
+                   br'\w{1,10}, \d{1,10}, \d{1,10}, \d{1,10}, \d{1,10}, \r\n){1,10}(.+?)Microsoft Forms '),
+                  (b'\x05\x00\x00\x00\x17\x00',
+                   br'\x05\x00\x00\x00\x17\x00(.*)(?:(?:Microsoft Forms 2.0 Form)|(?:ID="{))'),
+                  (b'\xd7\x8c\xfe\xfb',
+                   br'\xd7\x8c\xfe\xfb(.*)(?:(?:Microsoft Forms 2.0 Form)|(?:ID="{))'),
+                  (b'\x00V\x00B\x00F\x00r\x00a\x00m\x00e\x00',
+                   br'\x00V\x00B\x00F\x00r\x00a\x00m\x00e\x00(.*)(?:(?:Microsoft Forms 2.0 (?:Form|Frame))|(?:ID="\{))')]
     for anchor, chunk_pat in chunk_pats:
         chunk = _read_chunk(anchor, chunk_pat, data)
         if (chunk is not None):
             if debug:
-                print "\nCHUNK ANCHOR: '" + anchor + "'"
-                print "CHUNK PATTERN: '" + chunk_pat + "'"
+                print("\nCHUNK ANCHOR: '" + safe_str_convert(anchor) + "'")
+                print("CHUNK PATTERN: '" + safe_str_convert(chunk_pat) + "'")
             break
 
     # Did we find the value chunk?
     if (chunk is None):                
         if debug:
-            print "\nNO VALUES"
+            print("\nNO VALUES")
         return None
 
     # Get the actual chunk.
     chunk = chunk[0]
 
     # Strip some red herring strings from the chunk.
-    chunk = chunk.replace("\x02$", "").replace("\x01@", "")
-    #if (re.search(r'[\x20-\x7f]{5,}(?:\x00[\x20-\x7f]){5,}', chunk) is not None):
-    #    chunk = re.sub(r'[\x20-\x7f]{5,1000}(?:\x00[\x20-\x7f]){5,1000}', "", chunk, re.IGNORECASE)
+    chunk = chunk.replace(b"\x02$", b"").replace(b"\x01@", b"")
 
     # Normalize Page object naming.
-    page_name_pat = r"Page(\d+)(?:(?:\-\d+)|[a-zA-Z]+)"
-    chunk = re.sub(page_name_pat, r"Page\1", chunk)
+    page_name_pat = br"Page(\d+)(?:(?:\-\d+)|[a-zA-Z]+)"
+    chunk = re.sub(page_name_pat, br"Page\1", chunk)
     
     if debug:
-        print "\nChunk:"
-        print chunk
+        print("\nChunk:")
+        print(chunk)
 
     # Done.
     return chunk
@@ -684,27 +814,27 @@ def _read_raw_strs(chunk, stream_names, debug):
     """
 
     # Pull out the strings from the value chunk.
-    ascii_pat = r"(?:[\x09\x20-\x7f]|\x0d\x0a){4,}|(?:(?:[\x09\x20-\x7f]\x00|\x0d\x00\x0a\x00)){4,}"
+    ascii_pat = br"(?:[\x09\x20-\x7f]|\x0d\x0a){4,}|(?:(?:[\x09\x20-\x7f]\x00|\x0d\x00\x0a\x00)){4,}"
     vals = re.findall(ascii_pat, chunk)
     vals = vals[:-1]
     tmp_vals = []
     for val in vals:
 
         # No wide char strings.
-        val = val.replace("\x00", "")
+        val = val.replace(b"\x00", b"")
         
         # Eliminate cruft.
         for cruft_pat in cruft_pats:
-            val = re.sub(cruft_pat, "", val)
+            val = re.sub(cruft_pat, b"", val)
             
         # Skip strings that were pure cruft.
         if (len(val) == 0):
             continue
             
         # Skip fonts and other things.
-        if ((val.startswith("Taho")) or
-            (val.startswith("PROJECT")) or
-            (val.startswith("_DELETED_NAME_"))):
+        if ((val.startswith(b"Taho")) or
+            (val.startswith(b"PROJECT")) or
+            (val.startswith(b"_DELETED_NAME_"))):
             continue
 
         # No stream names.
@@ -717,8 +847,8 @@ def _read_raw_strs(chunk, stream_names, debug):
     # Work with the modified list of strings.
     vals = tmp_vals
     if debug:
-        print "\nORIG RAW VALS:"
-        print vals
+        print("\nORIG RAW VALS:")
+        print(vals)
 
     # Done.
     return vals
@@ -743,20 +873,22 @@ def _handle_control_tip_text(control_tip_var_names, vals, debug):
     # list.
     r = []
     if debug:
-        print "\nCONTROL TIP PROCESSING:"
+        print("\nCONTROL TIP PROCESSING:")
     for name in control_tip_var_names:
         pos = -1
+        if isinstance(name, str):
+            name = bytes(name, "latin-1")
         for str_val in vals:
             pos += 1
             if ((str_val.startswith(name)) and ((pos + 1) < len(vals))):
 
                 # Skip values that are not valid.
-                if (vals[pos + 1].startswith("ControlTipText")):
+                if (vals[pos + 1].startswith(b"ControlTipText")):
                     continue
                 
                 # Save the current name/value pair.
                 if debug:
-                    print (name, vals[pos + 1])
+                    print((name, vals[pos + 1]))
                 r.append((name, vals[pos + 1]))
 
                 # Some extra characters sometimes are on the end of the names. Brute force this
@@ -773,7 +905,7 @@ def _handle_control_tip_text(control_tip_var_names, vals, debug):
                     r.append((n, vals[pos + 1]))
 
     # Done.
-    return r
+    return _make_elems_str(r)
 
 def _get_specific_values(chunk, stream_names, debug):
     """Get possible OLE object text values.
@@ -793,14 +925,14 @@ def _get_specific_values(chunk, stream_names, debug):
     """
 
     # Get values.
-    val_pat = r"(?:[\x02\x10]\x00\x00([\x09\x20-\x7f]{2,}))|" + \
-              r"((?:\x00[\x09\x20-\x7f]|\x00\x0d\x00\x0a){2,})|" + \
-              r"(?:\x05\x80([\x09\x20-\x7f]{2,}))|" + \
-              r"(?:[\x15\x0c\x0b]\x00\x80([\x09\x20-\x7f]{2,}(?:\x01\x00C\x00o\x00m\x00p\x00O\x00b\x00j.+[\x09\x20-\x7f]{5,})?))"
-    vals = re.findall(val_pat, chunk.replace("\x19 ", "`\x00"))
+    val_pat = br"(?:[\x02\x10]\x00\x00([\x09\x20-\x7f]{2,}))|" + \
+              br"((?:\x00[\x09\x20-\x7f]|\x00\x0d\x00\x0a){2,})|" + \
+              br"(?:\x05\x80([\x09\x20-\x7f]{2,}))|" + \
+              br"(?:[\x15\x0c\x0b]\x00\x80([\x09\x20-\x7f]{2,}(?:\x01\x00C\x00o\x00m\x00p\x00O\x00b\x00j.+[\x09\x20-\x7f]{5,})?))"
+    vals = re.findall(val_pat, chunk.replace(b"\x19 ", b"`\x00"))
     if debug:
-        print "\nORIG SPECIFIC VALS:"
-        print vals
+        print("\nORIG SPECIFIC VALS:")
+        print(vals)
     
     tmp_vals = []
     rev_vals = list(vals)
@@ -816,30 +948,30 @@ def _get_specific_values(chunk, stream_names, debug):
             val = val[2]
 
         # Replace any wide char CompObj data items that appear in the middle of a chunk of text.
-        compobj_pat = r"\x01\x00C\x00o\x00m\x00p\x00O\x00b\x00j"
+        compobj_pat = br"\x01\x00C\x00o\x00m\x00p\x00O\x00b\x00j"
         if (re.search(compobj_pat, val) is not None):
             tmp_val = ""
-            ascii_pat = r"[\x20-\x7f]{5,}"
+            ascii_pat = br"[\x20-\x7f]{5,}"
             for s in re.findall(ascii_pat, val):
                 tmp_val += s
             val = tmp_val
             
         # No wide char strings.
-        val = val.replace("\x00", "")
+        val = val.replace(b"\x00", b"")
         
         # Eliminate cruft.
         for cruft_pat in cruft_pats:
-            val = re.sub(cruft_pat, "", val)
+            val = re.sub(cruft_pat, b"", val)
             
         # Skip strings that were pure cruft.
         if (len(val) == 0):
             continue
             
         # Skip fonts and other things.
-        if ((val.startswith("Taho")) or
-            (val.startswith("PROJECT")) or
-            (val.startswith("_DELETED_NAME_")) or
-            ("Normal.ThisDocument" in val)):
+        if ((val.startswith(b"Taho")) or
+            (val.startswith(b"PROJECT")) or
+            (val.startswith(b"_DELETED_NAME_")) or
+            (b"Normal.ThisDocument" in val)):
             continue
 
         # Skip duplicates.
@@ -860,8 +992,8 @@ def _get_specific_values(chunk, stream_names, debug):
     var_vals = tmp_vals
 
     if debug:
-        print "\nORIG VAR_VALS:"
-        print var_vals
+        print("\nORIG VAR_VALS:")
+        print(var_vals)
     
     # There may be an extra piece of randomly generated data at the start of the
     # value list. See if there are 4 strings that appear random at the start of the
@@ -871,7 +1003,7 @@ def _get_specific_values(chunk, stream_names, debug):
         for s in var_vals[:5]:
             if (entropy(s) > 3.0):
                 num_random += 1
-            elif (s[0].isupper() and s[1:].islower()):
+            elif (s[0:1].isupper() and s[1:].islower()):
                 num_random += 1
         if (num_random >= 3):
             var_vals = var_vals[1:]
@@ -899,7 +1031,7 @@ def _get_specific_names(object_names, chunk, control_tip_var_names, debug):
     @param object_names (list) A list of the names (str) of the object fields
     referenced in the VBA code.
 
-    @param chunk (str) A chunk of OLE data containing OLE object names
+    @param chunk (bytes) A chunk of OLE data containing OLE object names
     and text values.
 
     @param control_tip_var_names (list) The names (str) of the control
@@ -914,21 +1046,23 @@ def _get_specific_names(object_names, chunk, control_tip_var_names, debug):
     """
 
     # Get names.
-    name_pat1 = r"(?:(?:\x17\x00)|(?:\x00\x80))(\w{2,})"
-    name_pat = r"(?:" + name_pat1 + ")|("
+    name_pat1 = br"(?:(?:\x17\x00)|(?:\x00\x80))(\w{2,})"
+    name_pat = br"(?:" + name_pat1 + b")|("
     first = True
     for object_name in object_names:
+        if isinstance(object_name, str):
+            object_name = bytes(object_name, "latin-1")
         if (not first):
-            name_pat += "|"
+            name_pat += br"|"
         first = False
-        if ("." in object_name):
-            object_name = object_name[:object_name.index(".")]
+        if (b"." in object_name):
+            object_name = object_name[:object_name.index(b".")]
         name_pat += object_name
-    name_pat += ")"
+    name_pat += br")"
     names = re.findall(name_pat, chunk)
     if debug:
-        print "\nORIG NAMES:"
-        print names
+        print("\nORIG NAMES:")
+        print(names)
 
     # Get rid of control tip text names, we have already handled those.
     tmp_names = []
@@ -937,7 +1071,7 @@ def _get_specific_names(object_names, chunk, control_tip_var_names, debug):
             name = name[0]
         else:
             name = name[1]
-        if (name in control_tip_var_names):
+        if (safe_str_convert(name) in control_tip_var_names):
             continue
         # Skip duplicates.
         if (name in tmp_names):
@@ -952,7 +1086,7 @@ def get_ole_textbox_values2(data, debug, vba_code, stream_names):
     """Read in the text associated with embedded OLE form textbox
     objects (hack!). NOTE: This currently is a really NASTY hack.
 
-    @param data (str) The read in Office 97 file (data).
+    @param data (bytes) The read in Office 97 file (data).
 
     @param debug (boolean) A flag indicating whether to print debug
     information.
@@ -996,10 +1130,10 @@ def get_ole_textbox_values2(data, debug, vba_code, stream_names):
         var_names = var_names[:len(var_vals)]
         
     if debug:
-        print "\nROUND 2:\nNAMES:"
-        print var_names
-        print "\nVALS:"
-        print var_vals
+        print("\nROUND 2:\nNAMES:")
+        print(var_names)
+        print("\nVALS:")
+        print(var_vals)
     
     # Match up the names and values.
     pos = -1
@@ -1014,9 +1148,9 @@ def get_ole_textbox_values2(data, debug, vba_code, stream_names):
         # Real processing.
         else:
             val = var_vals[pos]
-            if (val.endswith('o')):
+            if (val.endswith(b'o')):
                 val = val[:-1]
-            elif (val.endswith("oe")):
+            elif (val.endswith(b"oe")):
                 val = val[:-2]
 
         # Save name/value mapping.
@@ -1037,15 +1171,15 @@ def get_ole_textbox_values2(data, debug, vba_code, stream_names):
 
     # Done.
     if debug:
-        print "\nRESULTS VALUES2:"
-        print r
-    return r
+        print("\nRESULTS VALUES2:")
+        print(r)
+    return _make_elems_str(r)
 
 def get_ole_textbox_values1(data, debug, stream_names):
     """Read in the text associated with embedded OLE form textbox
     objects (hack!). NOTE: This currently is a really NASTY hack. 
 
-    @param data (str) The read in Office 97 file (data).
+    @param data (bytes) The read in Office 97 file (data).
 
     @param debug (boolean) A flag indicating whether to print debug
     information.
@@ -1064,39 +1198,39 @@ def get_ole_textbox_values1(data, debug, stream_names):
 
     # Find the object text values.
     if debug:
-        print "\nget_ole_textbox_values1"
+        print("\nget_ole_textbox_values1")
 
     # Pull out the chunk of data with the object values.
-    chunk_pat = r'DPB=".*"\x0d\x0aGC=".*"\x0d\x0a(.*;Word8.0;&H00000000)'
+    chunk_pat = br'DPB=".*"\x0d\x0aGC=".*"\x0d\x0a(.*;Word8.0;&H00000000)'
     chunk = re.findall(chunk_pat, data, re.DOTALL)
 
     # Did we find the value chunk?
     if (len(chunk) == 0):
         if debug:
-            print "\nNO VALUES"
+            print("\nNO VALUES")
         return []
     chunk = chunk[0]
 
     # Clear out some cruft that appears in the value chunk.
-    ignore_pat = r"\[Host Extender Info\]\x0d\x0a&H\d+={[A-Z0-9\-]+};VBE;&H\d+\x0d\x0a&H\d+={[A-Z0-9\-]+}?"
-    chunk = re.sub(ignore_pat, "", chunk)
-    if ("\x00\x01\x01\x40\x80\x00\x00\x00\x00\x1b\x48\x80" in chunk):
+    ignore_pat = br"\[Host Extender Info\]\x0d\x0a&H\d+={[A-Z0-9\-]+};VBE;&H\d+\x0d\x0a&H\d+={[A-Z0-9\-]+}?"
+    chunk = re.sub(ignore_pat, b"", chunk)
+    if (b"\x00\x01\x01\x40\x80\x00\x00\x00\x00\x1b\x48\x80" in chunk):
         start = chunk.index("\x00\x01\x01\x40\x80\x00\x00\x00\x00\x1b\x48\x80")
         chunk = chunk[start+1:]
 
     # Normalize Page object naming.
-    page_name_pat = r"Page(\d+)(?:(?:\-\d+)|[a-zA-Z]+)"
-    chunk = re.sub(page_name_pat, r"Page\1", chunk)
+    page_name_pat = br"Page(\d+)(?:(?:\-\d+)|[a-zA-Z]+)"
+    chunk = re.sub(page_name_pat, br"Page\1", chunk)
         
     # Pull out the strings from the value chunk.
-    ascii_pat = r"(?:[\x20-\x7f]|\x0d\x0a){5,}"
+    ascii_pat = br"(?:[\x20-\x7f]|\x0d\x0a){5,}"
     vals = re.findall(ascii_pat, chunk)
     vals = vals[:-1]
     tmp_vals = []
     for val in vals:
 
         # Skip fonts.
-        if (val.startswith("Taho")):
+        if (safe_str_convert(val).startswith("Taho")):
             continue
         # Skip stream names.
         if (val in stream_names):
@@ -1104,60 +1238,60 @@ def get_ole_textbox_values1(data, debug, stream_names):
         tmp_vals.append(val)
     vals = tmp_vals
     if debug:
-        print "\n---------------"
-        print "Values:"
-        print chunk
-        print vals
-        print len(vals)
+        print("\n---------------")
+        print("Values:")
+        print(chunk)
+        print(vals)
+        print(len(vals))
 
     # Pull out the object names.
 
     # Pull out the data chunk with the object names.
-    name_pat = r"\\MSForms.exd(.*)Microsoft Forms 2.0 Form\x00\x10\x00\x00\x00Embedded Object"
+    name_pat = br"\\MSForms.exd(.*)Microsoft Forms 2.0 Form\x00\x10\x00\x00\x00Embedded Object"
     chunk = re.findall(name_pat, data, re.DOTALL)
 
     # Did we find the name chunk?
     if (len(chunk) == 0):
         if debug:
-            print "\nNO NAMES"
+            print("\nNO NAMES")
         return []
     chunk_orig = chunk[0]
 
     # Can we narrow it down?
-    if ("C\x00o\x00m\x00p\x00O\x00b\x00j" not in chunk_orig):
+    if (b"C\x00o\x00m\x00p\x00O\x00b\x00j" not in chunk_orig):
         if debug:
-            print "\nNO NARROWED DOWN CHUNK"
+            print("\nNO NARROWED DOWN CHUNK")
         return []
     
     # Narrow the name chunk down.
-    start = chunk_orig.index("C\x00o\x00m\x00p\x00O\x00b\x00j")
-    chunk = chunk_orig[start + len("C\x00o\x00m\x00p\x00O\x00b\x00j"):]
+    start = chunk_orig.index(b"C\x00o\x00m\x00p\x00O\x00b\x00j")
+    chunk = chunk_orig[start + len(b"C\x00o\x00m\x00p\x00O\x00b\x00j"):]
     if debug:
-        print "\n---------------"
-        print "Names:"
-        print chunk
+        print("\n---------------")
+        print("Names:")
+        print(chunk)
 
     # Pull the names from the name chunk (ASCII strings).
     names = re.findall(ascii_pat, chunk)
     if (len(names) > 0):
         names = names[:-1]
     if (len(names) == 0):
-        if ("Document" not in chunk_orig):
+        if (b"Document" not in chunk_orig):
             if debug:
-                print "\nNO NAMES, NO Document IN CHUNK"
+                print("\nNO NAMES, NO Document IN CHUNK")
             return []
-        start = chunk_orig.index("Document")
-        chunk = chunk_orig[start + len("Document"):]
+        start = chunk_orig.index(b"Document")
+        chunk = chunk_orig[start + len(b"Document"):]
         names = re.findall(ascii_pat, chunk)
         names = names[:-1]
     if debug:
-        print names
-        print len(names)
+        print(names)
+        print(len(names))
 
     # If we have more names than values skip the first few names.
     if (len(names) > len(vals)):
         if debug:
-            print "\nNOT SAME # NAMES/VALS"
+            print("\nNOT SAME # NAMES/VALS")
         names = names[len(names) - len(vals):]
 
     # Collect up and return the name -> value mappings.
@@ -1181,14 +1315,14 @@ def get_ole_textbox_values1(data, debug, stream_names):
 
     # Done.
     if debug:
-        print "\n-----------\nResult:"
-        print r
-    return r
+        print("\n-----------\nResult:")
+        print(r)
+    return _make_elems_str(r)
 
 def get_vbaprojectbin(data):
     """Pull the vbaProject.bin file from a 2007+ Office (ZIP) file.
 
-    @param data (str) Already read in 2007+ file contents.
+    @param data (bytes) Already read in 2007+ file contents.
 
     @return (str) On success return the read in contents of
     vbaProject.bin. On error return None.
@@ -1233,14 +1367,14 @@ def get_vbaprojectbin(data):
 def strip_name(poss_name):
     """Remove bad characters from a potential OLE object name.
 
-    @param poss_name (str) The potential object name.
+    @param poss_name (bytes) The potential object name.
 
-    @return (str) The given name with bad characters stripped out.
+    @return (bytes) The given name with bad characters stripped out.
 
     """
     
     # Remove sketchy characters from name.
-    name = re.sub(r"[^A-Za-z\d_]", r"", poss_name)
+    name = re.sub(br"[^A-Za-z\d_]", br"", poss_name)
     return name.strip()
 
 def is_name(poss_name):
@@ -1259,12 +1393,14 @@ def is_name(poss_name):
 
     # Basic check first. Must start with an alphabetic character and
     # be followed with regular printable characters.
-    name_pat = r"[a-zA-Z]\w*"
+    if isinstance(poss_name, str):
+        poss_name = bytes(poss_name, "latin-1", errors="replace")
+    name_pat = br"[a-zA-Z]\w*"
     if (re.match(name_pat, poss_name) is None):
         return False
 
     # Now see how many non-name garbage characters are in the string.
-    bad_chars = re.findall(r"[^A-Za-z0-9_]", poss_name)
+    bad_chars = re.findall(br"[^A-Za-z0-9_]", poss_name)
     return (len(bad_chars) < 5)
     
 def clean_names(names):
@@ -1300,7 +1436,7 @@ def _find_name_in_data(object_names, found_names, strs, debug):
     """Look for a VBA name in the string values pulled from a chunk of an
     Office 97 file.
 
-    @param object_names (list) A list of the names (str) of the object
+    @param object_names (list) A list of the names (bytes) of the object
     fields referenced in the Office file's VBA code. These are the
     names being looked for.
 
@@ -1323,9 +1459,9 @@ def _find_name_in_data(object_names, found_names, strs, debug):
     curr_pos = 0
     name_pos = 0
     name = None
-    page_pat = r"(Page\d+)(?:[A-Za-z]+[A-Za-z0-9]*)?"
+    page_pat = br"(Page\d+)(?:[A-Za-z]+[A-Za-z0-9]*)?"
     for field in strs[::-1]:
-        poss_name = field.replace("\x00", "").replace("\xff", "").strip()
+        poss_name = field.replace(b"\x00", b"").replace(b"\xff", b"").strip()
         # Fix strings like "Page2M3A"
         if (re.search(page_pat, poss_name) is not None):
             poss_name = re.findall(page_pat, poss_name)[0]
@@ -1336,7 +1472,7 @@ def _find_name_in_data(object_names, found_names, strs, debug):
             name = poss_name
             name_pos = curr_pos
             if debug:
-                print "\nFound referenced name: " + name
+                print("\nFound referenced name: " + safe_str_convert(name))
             break
         curr_pos += 1
 
@@ -1346,7 +1482,7 @@ def _find_name_in_data(object_names, found_names, strs, debug):
     name_pos = len(strs) - name_pos - 1 # handle reversed list.
     if (name is not None):
         curr_pos = -1
-        max_val = ""
+        max_val = b""
         for field in strs:
             curr_pos += 1
             if ((field == name) and
@@ -1505,7 +1641,7 @@ def get_ole_text_method_1(vba_code, data, debug=False):
 
     @param vba_code (str) The VBA macro code from the Office file.
 
-    @param data (str) The read in Office 97 file (data).
+    @param data (bytes) The read in Office 97 file (data).
 
     @param debug (boolean) A flag indicating whether to print debug
     information.
@@ -1521,116 +1657,116 @@ def get_ole_text_method_1(vba_code, data, debug=False):
     
     # Strip some red herring strings from the data.
     if debug1:
-        print "\n\nSTART get_ole_text_method_1 !!!!"
-    data = data.replace("\x1f\x22", '"\x00')
-    data = re.sub(r"[\x20-\x7e]\x00(?:\xe5|\xd5)", "", data)
-    data = data.replace("\x02$", "").\
-           replace("\x01@", "").\
-           replace("0\x00\xe5", "").\
-           replace("\xfc", "").\
-           replace("\x19 ", "").\
-           replace("_epx" + chr(223), "").\
-           replace("R\x00o\x00o\x00t\x00 \x00E\x00n\x00t\x00r\x00y", "").\
-           replace("Embedded Object", "").\
-           replace("mbedded Object", "").\
-           replace("bedded Object", "").\
-           replace("edded Object", "").\
-           replace("dded Object", "").\
-           replace("ded Object", "").\
-           replace("ed Object", "").\
-           replace("d Object", "").\
-           replace("jd\x00\x00", "\x00").\
-           replace("\x00\x00", "\x00").\
-           replace("\x0c%", "")
-    if (re.search(r"\x00.%([^\x00])\x00", data) is not None):
-        data = re.sub(r"\x00.%([^\x00])\x00", "\x00\\1\x00", data)
-    data = data.replace("\r", "__CARRIAGE_RETURN__")
-    data = data.replace("\n", "__LINE_FEED__")
-    if (re.search(r"\x00([ -~])[^ -~\x00]([ -~])\x00", data) is not None):
-        data = re.sub(r"\x00([ -~])[^ -~\x00]([ -~])\x00", "\x00\\1\x00\\2\x00", data)
-    if (re.search(r"\x00[ -~]{2}([ -~])\x00", data) is not None):
-        data = re.sub(r"\x00[ -~]{2}([ -~])\x00", "\x00\\1\x00", data)
-    data = re.sub(r"\x00[^ -~]", "", data)
-    if (re.search(r"\x00([ -~])[^ -~\x00]([ -~])\x00", data) is not None):
-        data = re.sub(r"\x00([ -~])[^ -~\x00]([ -~])\x00", "\x00\\1\x00\\2\x00", data)
-    data = data.replace("__CARRIAGE_RETURN__", "\r")
-    data = data.replace("__LINE_FEED__", "\n")
+        print("\n\nSTART get_ole_text_method_1 !!!!")
+    data = data.replace(b"\x1f\x22", b'"\x00')
+    data = re.sub(br"[\x20-\x7e]\x00(?:\xe5|\xd5)", b"", data)
+    data = data.replace(b"\x02$", b"").\
+           replace(b"\x01@", b"").\
+           replace(b"0\x00\xe5", b"").\
+           replace(b"\xfc", b"").\
+           replace(b"\x19 ", b"").\
+           replace(b"_epx" + chr(223).encode("latin-1"), b"").\
+           replace(b"R\x00o\x00o\x00t\x00 \x00E\x00n\x00t\x00r\x00y", b"").\
+           replace(b"Embedded Object", b"").\
+           replace(b"mbedded Object", b"").\
+           replace(b"bedded Object", b"").\
+           replace(b"edded Object", b"").\
+           replace(b"dded Object", b"").\
+           replace(b"ded Object", b"").\
+           replace(b"ed Object", b"").\
+           replace(b"d Object", b"").\
+           replace(b"jd\x00\x00", b"\x00").\
+           replace(b"\x00\x00", b"\x00").\
+           replace(b"\x0c%", b"")
+    if (re.search(br"\x00.%([^\x00])\x00", data) is not None):
+        data = re.sub(br"\x00.%([^\x00])\x00", b"\x00\\1\x00", data)
+    data = data.replace(b"\r", b"__CARRIAGE_RETURN__")
+    data = data.replace(b"\n", b"__LINE_FEED__")
+    if (re.search(br"\x00([ -~])[^ -~\x00]([ -~])\x00", data) is not None):
+        data = re.sub(br"\x00([ -~])[^ -~\x00]([ -~])\x00", b"\x00\\1\x00\\2\x00", data)
+    if (re.search(br"\x00[ -~]{2}([ -~])\x00", data) is not None):
+        data = re.sub(br"\x00[ -~]{2}([ -~])\x00", b"\x00\\1\x00", data)
+    data = re.sub(br"\x00[^ -~]", b"", data)
+    if (re.search(br"\x00([ -~])[^ -~\x00]([ -~])\x00", data) is not None):
+        data = re.sub(br"\x00([ -~])[^ -~\x00]([ -~])\x00", b"\x00\\1\x00\\2\x00", data)
+    data = data.replace(b"__CARRIAGE_RETURN__", b"\r")
+    data = data.replace(b"__LINE_FEED__", b"\n")
     if debug1:
-        print data
-        print "\n\n\n"
+        print(data)
+        print("\n\n\n")
 
     # Pull out the strings from the data.
-    ascii_pat = r"(?:[\r\n\x09\x20-\x7f]|\x0d\x0a){4,}|(?:(?:[\r\n\x09\x20-\x7f]\x00|\x0d\x00\x0a\x00)){4,}"
+    ascii_pat = br"(?:[\r\n\x09\x20-\x7f]|\x0d\x0a){4,}|(?:(?:[\r\n\x09\x20-\x7f]\x00|\x0d\x00\x0a\x00)){4,}"
     vals = re.findall(ascii_pat, data)
     tmp_vals = []
     for val in vals:
         
         # No wide char strings.
-        val = val.replace("\x00", "")
+        val = val.replace(b"\x00", b"")
         
         # Eliminate cruft.
         for cruft_pat in cruft_pats:
-            val = re.sub(cruft_pat, "", val)
+            val = re.sub(cruft_pat, b"", val)
             
         # Skip strings that were pure cruft.
         if (len(val) == 0):
             continue
             
         # Skip fonts and other things.
-        if ((val.startswith("Taho")) or
-            (val.startswith("PROJECT")) or
-            (val.startswith("_DELETED_NAME_"))):
+        if ((val.startswith(b"Taho")) or
+            (val.startswith(b"PROJECT")) or
+            (val.startswith(b"_DELETED_NAME_"))):
             continue
 
         # No HTML.
-        if (val.strip().startswith("<!DOCTYPE html")):
+        if (val.strip().startswith(b"<!DOCTYPE html")):
             continue
         
         # Save modified string.
         tmp_vals.append(val)
         if debug1:
-            print "+++++++++++++++"
-            print val
+            print("+++++++++++++++")
+            print(val)
 
     # Find the string with the most repeated substrings.
     max_substs, repeated_subst = _find_str_with_most_repeats(tmp_vals)
     if (max_substs is None):
         if debug1:
-            print "DONE!! NO REPEATED SUBSTRINGS!!"
+            print("DONE!! NO REPEATED SUBSTRINGS!!")
         return None
     if debug1:
-        print "\n"
-        print "*************"
-        print "MAX SUBSTS"
-        print max_substs
-        print "\n"
-        print "*************"
-        print "REPEATED SUBST"
-        print repeated_subst
+        print("\n")
+        print("*************")
+        print("MAX SUBSTS")
+        print(max_substs)
+        print("\n")
+        print("*************")
+        print("REPEATED SUBST")
+        print(repeated_subst)
     
     # Is this big enough to be interesting?
     if debug1:
-        print "LEN MAX STR: " + safe_str_convert(len(max_substs))
-        print "MAX REPEATS IN 1 STR: " + safe_str_convert(max_substs.count(repeated_subst))
-        print "REPEATED STR: '" + repeated_subst + "'"
+        print("LEN MAX STR: " + safe_str_convert(len(max_substs)))
+        print("MAX REPEATS IN 1 STR: " + safe_str_convert(max_substs.count(repeated_subst)))
+        print("REPEATED STR: '" + safe_str_convert(repeated_subst) + "'")
     if ((len(max_substs) < 100) or (max_substs.count(repeated_subst) < 20)):
         if debug1:
-            print "DONE!! TOO FEW REPEATED SUBSTRINGS!!"
+            print("DONE!! TOO FEW REPEATED SUBSTRINGS!!")
         return None
 
     # Tack together all the substrings that have the repeated substring as a large
     # percentage of their string.
     aggregate_str = ""
-    obj_pat = r'VERSION \d\.\d{1,5}\r\n' + \
-              r'Begin \{\w{2,20}\-\w{2,20}\-\w{2,20}\-\w{2,20}\-\w{2,20}\} \w{2,20} \r\n' + \
-              r' {1,10}Caption {1,30}= {1,30}"\w{1,20}"\r\n' + \
-              r' {1,10}ClientHeight {1,30}= {1,30}\d{1,20}\r\n' + \
-              r' {1,10}ClientLeft {1,30}= {1,30}\d{1,20}\r\n' + \
-              r' {1,10}ClientTop {1,30}=? {0,30}(?:\d{3})?'
+    obj_pat = br'VERSION \d\.\d{1,5}\r\n' + \
+              br'Begin \{\w{2,20}\-\w{2,20}\-\w{2,20}\-\w{2,20}\-\w{2,20}\} \w{2,20} \r\n' + \
+              br' {1,10}Caption {1,30}= {1,30}"\w{1,20}"\r\n' + \
+              br' {1,10}ClientHeight {1,30}= {1,30}\d{1,20}\r\n' + \
+              br' {1,10}ClientLeft {1,30}= {1,30}\d{1,20}\r\n' + \
+              br' {1,10}ClientTop {1,30}=? {0,30}(?:\d{3})?'
     for val in tmp_vals:
 
         # Ignore empty strings.
-        val = val.replace("\x00", "")
+        val = val.replace(b"\x00", b"")
         if (len(val) == 0):
             continue
 
@@ -1656,21 +1792,21 @@ def get_ole_text_method_1(vba_code, data, debug=False):
             # repeated string chunks.
             for end_pos in range(0, 3):
                 if debug1:
-                    print "CHECK !!!!!!!!!!!!!"
-                    print "chopping off " + safe_str_convert(end_pos)
-                curr_agg_str = aggregate_str[:-end_pos]
+                    print("CHECK !!!!!!!!!!!!!")
+                    print("chopping off " + safe_str_convert(end_pos))
+                curr_agg_str = bytes(aggregate_str[:-end_pos], "latin-1")
                 for i in range(1, len(repeated_subst) + 1):
                     curr_first_half = repeated_subst[:i]
                     if debug1:
-                        print "++++"
-                        print "curr 1st half"
-                        print curr_first_half
-                        print "curr 1st half string end"
-                        print curr_agg_str[-len(curr_first_half):]
+                        print("++++")
+                        print("curr 1st half")
+                        print(curr_first_half)
+                        print("curr 1st half string end")
+                        print(curr_agg_str[-len(curr_first_half):])
                     if (curr_agg_str.endswith(curr_first_half) and
                         (len(curr_agg_str) > len(matched_agg_str))):
                         if debug1:
-                            print "MATCH!!"
+                            print("MATCH!!")
                         matched_agg_str = curr_agg_str
                         first_half_rep = curr_first_half
                         second_half_rep = repeated_subst[i:]
@@ -1682,16 +1818,16 @@ def get_ole_text_method_1(vba_code, data, debug=False):
 
             # Handle chopping garbage characters from the end of the aggregate string.
             if (matched_agg_str != ""):
-                aggregate_str = matched_agg_str
+                aggregate_str = safe_str_convert(matched_agg_str)
                 
             # There could be extra characters in front of the 2nd half of the string.
             if (first_half_rep is not None):
 
                 if debug1:
-                    print "FIRST HALF!!"
-                    print first_half_rep
-                    print "SECOND HALF!!"
-                    print second_half_rep
+                    print("FIRST HALF!!")
+                    print(first_half_rep)
+                    print("SECOND HALF!!")
+                    print(second_half_rep)
                 
                 # Figure out characters to skip in the 2nd half.
                 start_pos = 0
@@ -1700,8 +1836,8 @@ def get_ole_text_method_1(vba_code, data, debug=False):
                         break
                     start_pos += 1
                 if debug1:
-                    print "SKIP 2nd HALF!!"
-                    print val[:start_pos]
+                    print("SKIP 2nd HALF!!")
+                    print(val[:start_pos])
                 val = val[start_pos:]
 
             # The repeated string was not split.
@@ -1711,20 +1847,20 @@ def get_ole_text_method_1(vba_code, data, debug=False):
                 if (repeated_subst in val):
                     start_pos = val.index(repeated_subst)                    
                     while (((start_pos - 1) >= 0) and
-                           (re.match("[A-Za-z]", val[start_pos - 1]) is not None)):
+                           (re.match(b"[A-Za-z]", bytes([val[start_pos - 1]])) is not None)):
                         start_pos -= 1
                     val = val[start_pos:]
                 else:
-                    val = re.sub(obj_pat, "", val)
+                    val = re.sub(obj_pat, b"", val)
                 
-            # Add in another payload piece.
-            aggregate_str += val
+            # Add in another payload piece.            
+            aggregate_str += safe_str_convert(val)
         if debug1:
-            print "-------"
-            print val.strip()
-            print pct
+            print("-------")
+            print(val.strip())
+            print(pct)
     if (len(aggregate_str) == 0):
-        aggregate_str = max_substs
+        aggregate_str = safe_str_convert(max_substs)
         
     # Get the names of ActiveX/OLE items accessed in the VBA.
     object_names = set(re.findall(r"(?:ThisDocument|ActiveDocument|\w+)\.(\w+)", vba_code))
@@ -1752,9 +1888,9 @@ def get_ole_text_method_1(vba_code, data, debug=False):
     # Eliminate any obviously bad names.
     object_names = clean_names(object_names)
     if debug1:
-        print "\nFINAL:"
-        print aggregate_str
-        print object_names
+        print("\nFINAL:")
+        print(aggregate_str)
+        print(object_names)
         sys.exit(0)
 
     
@@ -1762,13 +1898,13 @@ def get_ole_text_method_1(vba_code, data, debug=False):
     r = []
     for curr_object in object_names:
         r.append((curr_object, aggregate_str))
-    return r
+    return _make_elems_str(r)
 
 def _get_next_chunk(data, index, form_str, form_str_pat, end_object_marker):
     """Get the next chunk of OLE object name/value information from the
     given OLE data.
 
-    @param data (str) The read in Office 97 file (data).
+    @param data (bytes) The read in Office 97 file (data).
 
     @param index (int) The position in the OLE data from which to
     start looking for the next chunk.
@@ -1793,7 +1929,7 @@ def _get_next_chunk(data, index, form_str, form_str_pat, end_object_marker):
     search_r = re.search(form_str_pat, data[index:])
     index = search_r.start() + index
     start = index + len(search_r.group(0))
-    while ((start < len(data)) and (ord(data[start]) in range(32, 127))):
+    while ((start < len(data)) and (ord(data[start:start+1]) in range(32, 127))):
         start += 1
 
     # More textbox forms?
@@ -1887,6 +2023,9 @@ def _guess_name_from_data(strs, field_marker, debug):
     name_pos = None
     name = None
     curr_pos = 0
+    #print("+++++++++++")
+    #for s in strs:
+    #    print(type(s))
     for field in strs:
     
         # It might come after the 'Forms.TextBox.1' tag.
@@ -1896,10 +2035,10 @@ def _guess_name_from_data(strs, field_marker, debug):
             # next field is the name. CompObj does not count either.
             poss_name = None
             if ((curr_pos + 1) < len(strs)):
-                poss_name = strs[curr_pos + 1].replace("\x00", "").replace("\xff", "").strip()
-            skip_names = set(["contents", "ObjInfo", "CompObj"])
+                poss_name = strs[curr_pos + 1].replace(b"\x00", b"").replace(b"\xff", b"").strip()
+            skip_names = set([b"contents", b"ObjInfo", b"CompObj"])
             if ((poss_name is not None) and
-                ((not poss_name.startswith("_")) or
+                ((not poss_name.startswith(b"_")) or
                  (not poss_name[1:].isdigit())) and
                 (poss_name not in skip_names)):
     
@@ -1919,21 +2058,21 @@ def _guess_name_from_data(strs, field_marker, debug):
 
         # No. The name comes after an 'OCXNAME' or 'OCXPROPS' field. Figure out
         # which one.
-        name_marker = "OCXNAME"
+        name_marker = b"OCXNAME"
         for field in strs:
-            if (field.replace("\x00", "") == 'OCXPROPS'):
-                name_marker = "OCXPROPS"
+            if (field.replace(b"\x00", b"") == b'OCXPROPS'):
+                name_marker = b"OCXPROPS"
 
         # Now look for the name after the name marker.
         curr_pos = 0
         if debug:
-            print "\nName Marker: " + name_marker
+            print("\nName Marker: " + safe_str_convert(name_marker))
         for field in strs:
 
             # No name marker?
             if debug:
-                print "\nField: '" + field.replace("\x00", "") + "'"
-            if (field.replace("\x00", "") != name_marker):
+                print("\nField: '" + safe_str_convert(field).replace("\x00", "") + "'")
+            if (field.replace(b"\x00", b"") != name_marker):
                 # Move to the next field.
                 curr_pos += 1
                 continue
@@ -1942,17 +2081,17 @@ def _guess_name_from_data(strs, field_marker, debug):
 
             # If the next field looks something like '_1619423091' the
             # next field is not the name.                
-            poss_name = strs[curr_pos + 1].replace("\x00", "")
+            poss_name = strs[curr_pos + 1].replace(b"\x00", b"")
             if debug:
-                print "\nTry: '" + poss_name + "'"
-            if (poss_name.startswith("_") and poss_name[1:].isdigit()):
+                print("\nTry: '" + safe_str_convert(poss_name) + "'")
+            if (poss_name.startswith(b"_") and poss_name[1:].isdigit()):
 
                 # Move to the next field.
                 curr_pos += 1
                 continue
 
             # Got the name now?
-            if (poss_name != 'contents'):
+            if (poss_name != b'contents'):
 
                 # We have found the name.
                 name = poss_name
@@ -1961,12 +2100,12 @@ def _guess_name_from_data(strs, field_marker, debug):
             # If the string after 'OCXNAME' is 'contents' the actual name comes
             # after 'contents'
             name_pos = curr_pos + 1
-            poss_name = strs[curr_pos + 2].replace("\x00", "")
+            poss_name = strs[curr_pos + 2].replace(b"\x00", b"")
             if debug:
-                print "\nTry: '" + poss_name + "'"
+                print("\nTry: '" + safe_str_convert(poss_name) + "'")
                             
             # Does the next field does not look something like '_1619423091'?
-            if ((not poss_name.startswith("_")) or
+            if ((not poss_name.startswith(b"_")) or
                 (not poss_name[1:].isdigit())):
 
                 # We have found the name.
@@ -1976,36 +2115,36 @@ def _guess_name_from_data(strs, field_marker, debug):
 
             # Try the next field.
             if ((curr_pos + 3) < len(strs)):                                    
-                poss_name = strs[curr_pos + 3].replace("\x00", "")
+                poss_name = strs[curr_pos + 3].replace(b"\x00", b"")
                 if debug:
-                    print "\nTry: '" + poss_name + "'"
+                    print("\nTry: '" + safe_str_convert(poss_name) + "'")
 
                 # CompObj is not an object name.
-                if (poss_name != "CompObj"):
+                if (poss_name != b"CompObj"):
                     name = poss_name
                     name_pos = curr_pos + 3
                     break
 
             # And try the next field.
             if ((curr_pos + 4) < len(strs)):
-                poss_name = strs[curr_pos + 4].replace("\x00", "")
+                poss_name = strs[curr_pos + 4].replace(b"\x00", b"")
                 if debug:
-                    print "\nTry: '" + poss_name + "'"
+                    print("\nTry: '" + safe_str_convert(poss_name) + "'")
 
                 # ObjInfo is not an object name.
-                if (poss_name != "ObjInfo"):
+                if (poss_name != b"ObjInfo"):
                     name = poss_name
                     name_pos = curr_pos + 4
                     break
 
             # Heaven help us all. Try the next one.
             if ((curr_pos + 5) < len(strs)):
-                poss_name = strs[curr_pos + 5].replace("\x00", "")
+                poss_name = strs[curr_pos + 5].replace(b"\x00", b"")
                 if debug:
-                    print "\nTry: '" + poss_name + "'"
+                    print("\nTry: '" + safe_str_convert(poss_name) + "'")
 
                 # ObjInfo is not an object name.
-                if (poss_name != "ObjInfo"):
+                if (poss_name != b"ObjInfo"):
                     name = poss_name
                     name_pos = curr_pos + 5
                     break
@@ -2031,7 +2170,7 @@ def _get_raw_text_for_name(name_pos, strs, chunk, debug):
     @param debug (boolean) A flag indicating whether to print debug
     information.
     
-    @return (str) The text associated with the object with the name at
+    @return (bytes) The text associated with the object with the name at
     the given position. This will be an empty string if no associated
     text value is found.
 
@@ -2039,77 +2178,77 @@ def _get_raw_text_for_name(name_pos, strs, chunk, debug):
 
     # Get a text value after the name if it looks like the following field
     # is not a font.
-    text = ""
+    text = b""
     # This is not working quite right.
     if (name_pos + 1 < len(strs)):
-        asc_str = strs[name_pos + 1].replace("\x00", "").strip()
-        skip_names = set(["contents", "ObjInfo", "CompObj", None])
-        if (("Calibr" not in asc_str) and
-            ("OCXNAME" not in asc_str) and
+        asc_str = strs[name_pos + 1].replace(b"\x00", b"").strip()
+        skip_names = set([b"contents", b"ObjInfo", b"CompObj", None])
+        if ((b"Calibr" not in asc_str) and
+            (b"OCXNAME" not in asc_str) and
             (asc_str not in skip_names) and
-            (not asc_str.startswith("_DELETED_NAME_")) and
-            (re.match(r"_\d{10}", asc_str) is None)):
+            (not asc_str.startswith(b"_DELETED_NAME_")) and
+            (re.match(br"_\d{10}", asc_str) is None)):
             if debug:
-                print "\nValue: 1"
-                print strs[name_pos + 1]
+                print("\nValue: 1")
+                print(strs[name_pos + 1])
                 
             # Only used with large text values?
             if (len(strs[name_pos + 1]) > 3):
                 text = strs[name_pos + 1]
                 if debug:
-                    print "\nValue: 2"
-                    print strs[name_pos + 1]
+                    print("\nValue: 2")
+                    print(strs[name_pos + 1])
 
     # Break out the (possible additional) value.
-    val_pat = r"(?:\x00|\xff)[\x20-\x7e]+[^\x00]*\x00+\x02\x18"
+    val_pat = br"(?:\x00|\xff)[\x20-\x7e]+[^\x00]*\x00+\x02\x18"
     vals = re.findall(val_pat, chunk)
     if (len(vals) > 0):
-        empty_pat = r"(?:\x00|\xff)#[^\x00]*\x00+\x02\x18"
+        empty_pat = br"(?:\x00|\xff)#[^\x00]*\x00+\x02\x18"
         if (len(re.findall(empty_pat, vals[0])) == 0):
-            poss_val = re.findall(r"[\x20-\x7e]+", vals[0][1:-2])[0]
+            poss_val = re.findall(br"[\x20-\x7e]+", vals[0][1:-2])[0]
             if ((poss_val != text) and (len(poss_val) > 1)):
-                text += poss_val.replace("\x00", "")
+                text += poss_val.replace(b"\x00", b"")
                 if debug:
-                    print "\nValue: 3"
-                    print poss_val.replace("\x00", "")
+                    print("\nValue: 3")
+                    print(safe_str_convert(poss_val).replace("\x00", ""))
 
     # Pattern 2                    
-    val_pat = r"\x00#\x00\x00\x00[^\x02]+\x02"
+    val_pat = br"\x00#\x00\x00\x00[^\x02]+\x02"
     vals = re.findall(val_pat, chunk)
     if (len(vals) > 0):
-        tmp_text = re.findall(r"[\x20-\x7e]+", vals[0][2:-2])
+        tmp_text = re.findall(br"[\x20-\x7e]+", vals[0][2:-2])
         if (len(tmp_text) > 0):
             poss_val = tmp_text[0]
             if (poss_val != text):
                 if debug:
-                    print "\nValue: 4"
-                    print poss_val
+                    print("\nValue: 4")
+                    print(poss_val)
                 text += poss_val
 
     # Pattern 3
-    val_pat = r"([\x20-\x7e]{5,})\x00\x02\x0c\x00\x34"
+    val_pat = br"([\x20-\x7e]{5,})\x00\x02\x0c\x00\x34"
     vals = re.findall(val_pat, chunk)
     if (len(vals) > 0):
         for v in vals:
             text += v
             if debug:
-                print "\nValue: 5"
-                print v
+                print("\nValue: 5")
+                print(v)
 
     # Pattern 4
-    val_pat = r"([\x20-\x7e]{5,})\x00{2,4}\x02\x0c"
+    val_pat = br"([\x20-\x7e]{5,})\x00{2,4}\x02\x0c"
     vals = re.findall(val_pat, chunk)
     if (len(vals) > 0):
         for v in vals:
             text += v
             if debug:
-                print "\nValue: 6"
-                print v
+                print("\nValue: 6")
+                print(v)
                 
     # Maybe big chunks of text after the name are part of the value?
     for pos in range(name_pos + 2, len(strs)):
-        curr_str = strs[pos].replace("\x00", "")
-        if ((len(curr_str) > 40) and (not curr_str.startswith("Microsoft "))):
+        curr_str = strs[pos].replace(b"\x00", b"")
+        if ((len(curr_str) > 40) and (not curr_str.startswith(b"Microsoft "))):
             text += curr_str
 
     # Done.
@@ -2119,7 +2258,7 @@ def _clean_text_for_name(chunk, name, text, object_names, stream_names, longest_
     """Clean up the text value associated with an object with a given
     name.
 
-    @param chunk (str) The OLE chunk being analyzed.
+    @param chunk (bytes) The OLE chunk being analyzed.
 
     @param name (str) The name of the object.
 
@@ -2146,63 +2285,63 @@ def _clean_text_for_name(chunk, name, text, object_names, stream_names, longest_
 
     # Pull out the size of the text.
     # Try version 1.
-    size_pat = r"\x48\x80\x2c\x03\x01\x02\x00(.{2})"
+    size_pat = br"\x48\x80\x2c\x03\x01\x02\x00(.{2})"
     tmp = re.findall(size_pat, chunk)
     if (len(tmp) == 0):
         # Try version 2.
-        size_pat = r"\x48\x80\x2c(.{2})"
+        size_pat = br"\x48\x80\x2c(.{2})"
         tmp = re.findall(size_pat, chunk)
     if (len(tmp) == 0):
         # Try version 3.
-        size_pat = r"\xf8\x00\x28\x00\x00\x00(.{2})"
+        size_pat = br"\xf8\x00\x28\x00\x00\x00(.{2})"
         tmp = re.findall(size_pat, chunk)
     if (len(tmp) == 0):
         # Try version 4.
-        size_pat = r"\x2c\x00\x00\x00\x1d\x00\x00\x00(.{2})"
+        size_pat = br"\x2c\x00\x00\x00\x1d\x00\x00\x00(.{2})"
         tmp = re.findall(size_pat, chunk)
     if (len(tmp) > 0):
         size_bytes = tmp[0]
-        size = ord(size_bytes[1]) * 256 + ord(size_bytes[0])
+        size = ord(size_bytes[1:2]) * 256 + ord(size_bytes[0:1])
         if (debug):
-            print "SIZE: "
-            print size
-        if ((len(text) > size) and (not name.startswith("Page"))):
+            print("SIZE: ")
+            print(size)
+        if ((len(text) > size) and (not name.startswith(b"Page"))):
             text = text[:size]
 
     # Eliminate text values that look like variable names.
-    if ((strip_name(text) in object_names) or
-        (strip_name(text) in stream_names)):
+    if ((safe_str_convert(strip_name(text)) in object_names) or
+        (safe_str_convert(strip_name(text)) in stream_names)):
         if debug:
-            print "\nBAD: Val is name '" + text + "'"
+            print("\nBAD: Val is name '" + safe_str_convert(text) + "'")
 
         # Hack. If the bad value is a Page* name and we have a really long strings from
         # the chunk, use those as the value.
-        if ((text.startswith("Page")) and (len(longest_str) > 30)):
-            tmp_str = ""
+        if ((text.startswith(b"Page")) and (len(longest_str) > 30)):
+            tmp_str = b""
             for field in orig_strs:
                 if ((len(field) > 20) and
-                    (not field.startswith("Microsoft "))):
-                    tmp_field = ""
-                    for s in re.findall(r"[\x20-\x7f]{5,}", field):
+                    (not field.startswith(b"Microsoft "))):
+                    tmp_field = b""
+                    for s in re.findall(br"[\x20-\x7f]{5,}", field):
                         tmp_field += s
                     tmp_str += tmp_field
             text = tmp_str
         else:
-            text = ""
+            text = b""
         if debug:
-            print len(longest_str)
-            print "BAD: Set Val to '" + text + "'"
+            print(len(longest_str))
+            print("BAD: Set Val to '" + safe_str_convert(text) + "'")
 
     # Eliminate text values that look like binary chunks.
-    text = text.replace("\x00", "")
-    if (len(re.findall(r"[^\x20-\x7f]", text)) > 2):
+    text = text.replace(b"\x00", b"")
+    if (len(re.findall(br"[^\x20-\x7f]", text)) > 2):
         if debug:
-            print "\nBAD: Binary in Val. Set to ''"
-        text = ""
+            print("\nBAD: Binary in Val. Set to ''")
+        text = b""
 
     # Eliminate form references.
-    if ((text.startswith("Forms.")) and (len(text) < 20)):
-        text = ""
+    if ((text.startswith(b"Forms.")) and (len(text) < 20)):
+        text = b""
 
     # Done.
     return text
@@ -2304,12 +2443,14 @@ def _merge_ole_form_results(r, v1_vals, v1_1_vals):
         name = old_pair[0]
         val = old_pair[1]
         for cruft_pat in cruft_pats:
-            val = re.sub(cruft_pat, "", val)
+            if isinstance(val, str):
+                val = bytes(val, "latin-1")
+            val = re.sub(cruft_pat, b"", val)
         tmp.append((name, val))
     r = tmp
 
     # Done.
-    return r
+    return _make_elems_str(r)
 
 def _clean_up_ole_form_results(r, long_strs, v1_vals, v1_1_vals, object_names, debug):
     """Clean up the object name/value results computed in various ways,
@@ -2350,13 +2491,13 @@ def _clean_up_ole_form_results(r, long_strs, v1_vals, v1_1_vals, object_names, d
             tmp.append(dat)
         else:
             if debug:
-                print "\nSkip 1: " + safe_str_convert(dat)
+                print("\nSkip 1: " + safe_str_convert(dat))
         last_val = dat[1].strip()
     r = tmp
 
     if debug:
-        print "\nFirst result:"
-        print r
+        print("\nFirst result:")
+        print(r)
     
     # Fix data that is showing up as a variable name.
     tmp = []
@@ -2389,8 +2530,8 @@ def _clean_up_ole_form_results(r, long_strs, v1_vals, v1_1_vals, object_names, d
     pos = -1
     last_val = ""
     if debug:
-        print "\nLONG STRS!!"
-        print long_strs
+        print("\nLONG STRS!!")
+        print(long_strs)
     for dat in r:
 
         # Does the current variable have no value?
@@ -2398,9 +2539,9 @@ def _clean_up_ole_form_results(r, long_strs, v1_vals, v1_1_vals, object_names, d
         curr_var = dat[0]
         curr_val = dat[1]        
         if debug:
-            print curr_var
-            print pos
-            print len(curr_val)
+            print(curr_var)
+            print(pos)
+            print(len(curr_val))
         if ((curr_val is None) or (len(curr_val) == 0)):
             
             # Set the current variable to the value of the next variable with a long value and
@@ -2412,7 +2553,7 @@ def _clean_up_ole_form_results(r, long_strs, v1_vals, v1_1_vals, object_names, d
                     poss_val = r[i][1]
                 if (len(poss_val) > 15):
                     if debug:
-                        print "\nREPLACE (1)"
+                        print("\nREPLACE (1)")
                     curr_val = poss_val
                     replaced = True
                     break
@@ -2420,7 +2561,7 @@ def _clean_up_ole_form_results(r, long_strs, v1_vals, v1_1_vals, object_names, d
             # If we found nothing going forward, try the previous value?
             if ((not replaced) and (len(last_val) > 15)):
                 if debug:
-                    print "\nREPLACE (2)"
+                    print("\nREPLACE (2)")
                 curr_val = last_val
 
         # Update the result list.
@@ -2459,8 +2600,8 @@ def _clean_up_ole_form_results(r, long_strs, v1_vals, v1_1_vals, object_names, d
     # If we have nothing assigned to Page1, just pick the longest string seen
     # to assign to missing PageNN variables and hope for the best.
     if debug:
-        print "\nPAGE VAL!!"
-        print page_val
+        print("\nPAGE VAL!!")
+        print(page_val)
     if (page_val == ""):
         page_val = longest_str
         
@@ -2480,7 +2621,131 @@ def _clean_up_ole_form_results(r, long_strs, v1_vals, v1_1_vals, object_names, d
 
     # Done.
     return r
+
+def _make_elems_str(r):
+    """Convert all the tuple elements in a list of tuples to str.
+
+    @param r (list) A list of tuples.
+
+    @return (list) A list of tuples where each element is a
+    str.
+
+    """
+    r1 = []
+    for tup in r:
+        new_tup = []
+        for elem in tup:
+            new_tup.append(safe_str_convert(elem))
+        r1.append(tuple(new_tup))
+    return r1
+
+def get_variable_values(obj, vba_code):
+    """Read in the text associated with document variables
+    (ActiveDocument.Variable()). NOTE: This currently is a NASTY hack.
+
+    @param obj (str) The read in Office file to analyze or the name
+    of the Office file to analyze. The file will be read in if a file
+    name is given.
+
+    @param vba_code (str) The VBA macro code from the Office file.
+
+    @return (list) The results as a list of 2 element tuples where the
+    1st element is the name (str) of an object and the 2nd element is
+    the text value (str) of the object.
+
+    """
+
+    # Figure out if we have been given already read in data or a file name.
+    if obj[0:4] == '\xd0\xcf\x11\xe0':
+
+        #its the data blob
+        data = obj
+    else:
+
+        # Probably a file name?
+        try:
+            f = open(obj, "rb")
+            data = f.read()
+            f.close()
+        except IOError:
+            data = obj
+        except TypeError:
+            data = obj
+        except ValueError:
+            data = obj
+
+    # Is this an Office97 file?
+    if (not filetype.is_office97_file(data, True)):
+
+        # See if we can pul vbaProject.bin from a 2007+ Office file.
+        data = get_vbaprojectbin(data)
+        if (data is None):
+            return []
+
+    # Set to True to print lots of debugging.
+    #debug = True
+    debug = False
+    if debug:
+        print("\nExtracting ActiveDocument.Variable() strings...")
+
+    # Pull out the names of the variables being accessed. Currently we
+    # only handle variables where the name is a string literal.
+    # ActiveDocument.Variables("PNRclLpmUIPqrLBq")
+    var_pat = r"ActiveDocument\.Variables\( *\"([^\"]{1,200})\" *\)"
+    var_names = set(re.findall(var_pat, vba_code))
+    if (len(var_names) == 0):
+        if debug:
+            print("\nNo literal var names found.")
+            sys.exit(0)
+        return []
+
+    # Look for the value of each variable.
+    r = []
+    for var_name in var_names:
+
+        # Make a regex to look for the value of this variable.
+        if debug:
+            print("Looking for '" + var_name + "'")
+        val_pat = br""
+        # Name, null padded.
+        for c in var_name:
+            val_pat += bytes(c + "\x00", "utf-8")
+
+        # 3 or more non-ASCII chars. Single ASCII characters are OK, but they
+        # have to be followed by a non-ASCII char.        
+        val_pat += br"(?:[\x20-\x7e]?(?:[\x00-\x1f]|[\x80-\xff])){3,100}"
+        # A bunch of null padded ASCII chars. This is the var value.
+        val_pat += br"((?:(?:[\x20-\x7e]|\r?\n)\x00){3,})"
+
+        # Look for the variable value.
+        if debug:
+            print("val regex:")
+            print(val_pat)
+        value = re.findall(val_pat, data)
+        if debug:
+            print("Found:")
+            print(value)
+
+        # Got a value?
+        if (len(value) > 0):
+
+            # Pick the longest value if we get multiple value hits.
+            longest = b""
+            for v in value:
+                if (len(v) > len(longest)):
+                    longest = v                    
             
+            # Remove null padding and save.
+            value = safe_str_convert(longest.replace(b"\x00", b""))
+            r.append((var_name, value))
+
+    # Done.
+    if debug:
+        print(".Variable() results:")
+        print(r)
+        sys.exit(0)
+    return r
+
 def get_ole_textbox_values(obj, vba_code):
     """Read in the text associated with embedded OLE form textbox
     objects. NOTE: This currently is a NASTY hack.
@@ -2513,6 +2778,8 @@ def get_ole_textbox_values(obj, vba_code):
             data = obj
         except TypeError:
             data = obj
+        except ValueError:
+            data = obj
 
     # Is this an Office97 file?
     if (not filetype.is_office97_file(data, True)):
@@ -2526,22 +2793,22 @@ def get_ole_textbox_values(obj, vba_code):
     #debug = True
     debug = False
     if debug:
-        print "\nExtracting OLE/ActiveX TextBox strings..."
+        print("\nExtracting OLE/ActiveX TextBox strings...")
         
     # Pull out the stream names so we don't treat those as data values.
     stream_names = _get_stream_names(vba_code)
     if debug:
-        print "\nStream Names: " + safe_str_convert(stream_names) + "\n"
+        print("\nStream Names: " + safe_str_convert(stream_names) + "\n")
         
     # Clear out some troublesome byte sequences.
-    data = data.replace("R\x00o\x00o\x00t\x00 \x00E\x00n\x00t\x00r\x00y", "")
-    data = data.replace("o" + "\x00" * 40, "\x00" * 40)
-    data = re.sub("Tahoma\w{0,5}", "\x00", data)
+    data = data.replace(b"R\x00o\x00o\x00t\x00 \x00E\x00n\x00t\x00r\x00y", b"")
+    data = data.replace(b"o" + b"\x00" * 40, b"\x00" * 40)
+    data = re.sub(b"Tahoma\w{0,5}", b"\x00", data)
 
     # Try a method specific to a certain maldoc campaign first.
     r = get_ole_text_method_1(vba_code, data, debug=debug)
     if (r is not None):
-        return r
+        return _make_elems_str(r)
     
     # And try alternate method of pulling data. These will be merged in later.
     v1_vals = get_ole_textbox_values1(data, debug, stream_names)
@@ -2550,47 +2817,47 @@ def get_ole_textbox_values(obj, vba_code):
     v1_1_vals = get_ole_textbox_values2(data, debug, vba_code, stream_names)
 
     if debug:
-        print "\nget_ole_textbox_values()\n"
+        print("\nget_ole_textbox_values()\n")
 
     # Pull out the names of forms the VBA is accessing. We will use that later to try to
     # guess the names of ActiveX forms parsed from the raw Office file.        
     object_names, page_names = _pull_object_names(vba_code)
     if debug:
-        print "\nNames from VBA code:"
-        print object_names
+        print("\nNames from VBA code:")
+        print(object_names)
             
     # Sanity check.
     if (data is None):
         if debug:
-            print "\nNO DATA"
+            print("\nNO DATA")
             sys.exit(0)
         return []
 
     # Make sure some special fields are seperated.
-    data = data.replace("c\x00o\x00n\x00t\x00e\x00n\x00t\x00s", "\x00c\x00o\x00n\x00t\x00e\x00n\x00t\x00s\x00")
-    data = re.sub("(_(?:\x00\d){10})", "\x00" + r"\1", data)
+    data = data.replace(b"c\x00o\x00n\x00t\x00e\x00n\x00t\x00s", b"\x00c\x00o\x00n\x00t\x00e\x00n\x00t\x00s\x00")
+    data = re.sub(b"(_(?:\x00\d){10})", b"\x00" + br"\1", data)
 
     # Normalize Page object naming.
     # Page1M3A
-    page_name_pat = r"Page(\d+)(?:(?:\-\d+)|[a-zA-Z\.]+[a-zA-Z0-9]*)"
-    data = re.sub(page_name_pat, r"Page\1", data)
+    page_name_pat = br"Page(\d+)(?:(?:\-\d+)|[a-zA-Z\.]+[a-zA-Z0-9]*)"
+    data = re.sub(page_name_pat, br"Page\1", data)
     
     # Set the general marker for Form data chunks and fields in the Form chunks.
-    form_str = "Microsoft Forms 2.0"
-    form_str_pat = r"Microsoft Forms 2.0 [A-Za-z]{2,30}(?!Form)"
-    field_marker = "Forms."
+    form_str = b"Microsoft Forms 2.0"
+    form_str_pat = br"Microsoft Forms 2.0 [A-Za-z]{2,30}(?!Form)"
+    field_marker = b"Forms."
     if (re.search(form_str_pat, data) is None):
         if debug:
-            print "\nNO FORMS"
+            print("\nNO FORMS")
             sys.exit(0)
         return []
 
-    pat = r"(?:(?:[\x20-\x7e]|\r?\n){3,})|(?:(?:(?:\x00|\xff)(?:[\x20-\x7e]|\r?\n)){3,})"
+    pat = br"(?:(?:[\x20-\x7e]|\r?\n){3,})|(?:(?:(?:\x00|\xff)(?:[\x20-\x7e]|\r?\n)){3,})"
     index = 0
     r = []
     found_names = set()
     long_strs = []
-    end_object_marker = "D\x00o\x00c\x00u\x00m\x00e\x00n\x00t\x00S\x00u\x00m\x00m\x00a\x00r\x00y\x00I\x00n\x00f\x00o\x00r\x00m\x00a\x00t\x00i\x00o\x00n"
+    end_object_marker = b"D\x00o\x00c\x00u\x00m\x00e\x00n\x00t\x00S\x00u\x00m\x00m\x00a\x00r\x00y\x00I\x00n\x00f\x00o\x00r\x00m\x00a\x00t\x00i\x00o\x00n"
     while (re.search(form_str_pat, data[index:]) is not None):
 
         # Break out the data for an embedded OLE textbox form.
@@ -2600,17 +2867,17 @@ def get_ole_textbox_values(obj, vba_code):
         # Pull strings from the chunk.
         strs = re.findall(pat, chunk)
         if debug:
-            print "\n\n-------------- CHUNK ---------------"
-            print chunk
-            print safe_str_convert(strs).replace("\\x00", "").replace("\\xff", "")
+            print("\n\n-------------- CHUNK ---------------")
+            print(chunk)
+            print(safe_str_convert(strs).replace("\\x00", "").replace("\\xff", ""))
 
         # Save long strings. Maybe they are the value of a previous variable?
-        longest_str = ""
+        longest_str = b""
         orig_strs = strs
         for field in strs:
             if ((len(field) > 30) and
                 (len(field) > len(longest_str)) and
-                (not field.startswith("Microsoft "))):
+                (not field.startswith(b"Microsoft "))):
                 longest_str = field
         long_strs.append(longest_str)
 
@@ -2632,31 +2899,31 @@ def get_ole_textbox_values(obj, vba_code):
         if (not is_name(name)):
             index = end
             if debug:
-                print "\nNo name found. Moving to next chunk."
+                print("\nNo name found. Moving to next chunk.")
             r.append(("no name found", "placeholder"))
             continue
 
         # Remove sketchy characters from name.
         name = strip_name(name)
         if debug:
-            print "\nPossible Name: '" + name + "'"
+            print("\nPossible Name: '" + safe_str_convert(name) + "'")
         
         # Get a text value after the name if it looks like the following field
         # is not a font.
         text = _get_raw_text_for_name(name_pos, strs, chunk, debug)
         if debug:
-            print "\nORIG:"
-            print name
-            print text
-            print len(text)
+            print("\nORIG:")
+            print(name)
+            print(text)
+            print(len(text))
 
         # Clean up the text value.
         text = _clean_text_for_name(chunk, name, text, object_names, stream_names, longest_str, orig_strs, debug)
                     
         # Save the form name and text value.
-        if ((text != "") or (not name.startswith("Page"))):
+        if ((text != "") or (not name.startswith(b"Page"))):
             if debug:
-                print "\nSET '" + name + "' = '" + text + "'"
+                print("\nSET '" + safe_str_convert(name) + "' = '" + safe_str_convert(text) + "'")
             r.append((name, text))
 
         # Save that we found something for this variable.
@@ -2671,11 +2938,11 @@ def get_ole_textbox_values(obj, vba_code):
                 
     # Return the OLE form textbox information.
     if debug:
-        print "\nFINAL RESULTS:" 
-        print r
+        print("\nFINAL RESULTS:") 
+        print(r)
         sys.exit(0)
         
-    return r
+    return _make_elems_str(r)
 
 def read_form_strings(vba):
     """Read in the form strings in order as a lists of tuples like
@@ -2711,7 +2978,7 @@ def read_form_strings(vba):
             r.append((stream_name, form_string))
 
         # Done.
-        return r
+        return _make_elems_str(r)
 
     except Exception as e:
         log.error("Cannot read form strings. " + safe_str_convert(e))
@@ -2721,7 +2988,7 @@ def get_shapes_text_values_xml(fname):
     """Read in the text associated with Shape objects in a document saved
     as Flat OPC XML files. NOTE: This currently is a hack.
 
-    @param fname (str) The OPC XML file contents (already read in) or
+    @param fname (bytes) The OPC XML file contents (already read in) or
     the name of the file to analyze. If a file name is given it will
     be read in.
 
@@ -2732,7 +2999,7 @@ def get_shapes_text_values_xml(fname):
     """
 
     contents = None
-    if fname.startswith("<?xml"):
+    if fname.startswith(b"<?xml"):
         contents=fname
     else:
 
@@ -2746,10 +3013,12 @@ def get_shapes_text_values_xml(fname):
             contents = fname
         except TypeError:
             contents = fname
+        except ValueError:
+            contents = fname            
 
     # Is this an XML file?
-    if ((not contents.startswith("<?xml")) or
-        ("<w:txbxContent>" not in contents)):
+    if ((not contents.startswith(b"<?xml")) or
+        (b"<w:txbxContent>" not in contents)):
         return []
 
     # It is an XML file.
@@ -2758,13 +3027,13 @@ def get_shapes_text_values_xml(fname):
     # Pull out the text surrounded by <w:txbxContent> ... </w:txbxContent>.
     # These big blocks hold the XML for each piece of Shapes() text.
     blocks = []
-    start = contents.index("<w:txbxContent>") + len("<w:txbxContent>")
-    end = contents.index("</w:txbxContent>")
+    start = contents.index(b"<w:txbxContent>") + len(b"<w:txbxContent>")
+    end = contents.index(b"</w:txbxContent>")
     while (start is not None):
         blocks.append(contents[start:end])
-        if ("<w:txbxContent>" in contents[end:]):
-            start = end + contents[end:].index("<w:txbxContent>") + len("<w:txbxContent>")
-            end = end + len("</w:txbxContent>") + contents[end + len("</w:txbxContent>"):].index("</w:txbxContent>")
+        if (b"<w:txbxContent>" in contents[end:]):
+            start = end + contents[end:].index(b"<w:txbxContent>") + len(b"<w:txbxContent>")
+            end = end + len(b"</w:txbxContent>") + contents[end + len(b"</w:txbxContent>"):].index(b"</w:txbxContent>")
         else:
             start = None
             end = None
@@ -2773,7 +3042,7 @@ def get_shapes_text_values_xml(fname):
     for block in blocks:
 
         # Get all strings surrounded by <w:t> ... </w:t> tags in the block.
-        pat = r"\<w\:t[^\>]*\>([^\<]+)\</w\:t\>"
+        pat = br"\<w\:t[^\>]*\>([^\<]+)\</w\:t\>"
         strs = re.findall(pat, block)
 
         # These could be broken up with many <w:t> ... </w:t> tags. See if we need to
@@ -2804,7 +3073,7 @@ def get_shapes_text_values_xml(fname):
             continue
         
         # Access value with .TextFrame.TextRange.Text accessor.
-        shape_text = shape_text.replace("&amp;", "&")
+        shape_text = shape_text.replace(b"&amp;", b"&")
         var = "Shapes('" + safe_str_convert(pos) + "').TextFrame.TextRange.Text"
         r.append((var, shape_text))
         
@@ -2819,13 +3088,13 @@ def get_shapes_text_values_xml(fname):
         # Move to next shape.
         pos += 1
 
-    return r
+    return _make_elems_str(r)
 
 def get_shapes_text_values_direct_2007(data):
     """Read in shapes name/value mappings directly from word/document.xml
     from an unzipped Word 2007+ file.
 
-    @param data (str) The contents of the document.xml file to
+    @param data (bytes) The contents of the document.xml file to
     analyze.
 
     @return (list) The results as a list of 2 element tuples where the
@@ -2837,33 +3106,33 @@ def get_shapes_text_values_direct_2007(data):
     # TODO: This only handles a single Shapes object.
     
     # Get the name of the Shape element.
-    pat1 = r'<v:shape\s+id="(\w+)".+<w:txbxContent>'
+    pat1 = br'<v:shape\s+id="(\w+)".+<w:txbxContent>'
     name = re.findall(pat1, data)
     if (len(name) == 0):
         return []
     name = name[0]
 
     # Get the text value(s) for the Shape.
-    pat2 = r'<w:t[^<]*>([^<]+)</w:t[^<]*>'
+    pat2 = br'<w:t[^<]*>([^<]+)</w:t[^<]*>'
     vals = re.findall(pat2, data)
     if (len(vals) == 0):
         return []
 
     # Reassemble the values.
-    val = ""
+    val = b""
     for v in vals:
         val += v
     val = _clean_2007_text(val)
     
     # Return the Shape name and text value.
     r = [(name, val)]
-    return r
+    return _make_elems_str(r)
 
 def get_shapes_text_values_direct_2007_1(data):
     """Read in shapes name/value mappings directly from word/document.xml
     from an unzipped Word 2007+ file another way.
 
-    @param data (str) The contents of the document.xml file to
+    @param data (bytes) The contents of the document.xml file to
     analyze.
 
     @return (list) The results as a list of 2 element tuples where the
@@ -2876,7 +3145,7 @@ def get_shapes_text_values_direct_2007_1(data):
     
     # Get the shape text from a docPr element.
     # <wp:docPr id="1" name="Picture 1" descr="h95tb8tccpa0:02/d7/15n10ld2xdb68838ao28o10.95c9co0cmf9/3ex4cea1m93cdal39/a5i7db13abd.b8p93h64pdd?53la5=66u61n2dt831e7462.0acfea1dbc7"/>
-    pat1 = r'<wp\:docPr +id="(\d+)" +name="[^"]*" +descr="([^"]*)"'
+    pat1 = br'<wp\:docPr +id="(\d+)" +name="[^"]*" +descr="([^"]*)"'
     shape_info = re.findall(pat1, data)
     if (len(shape_info) == 0):
         return []
@@ -2886,13 +3155,13 @@ def get_shapes_text_values_direct_2007_1(data):
         
     # Return the Shape name and text value.
     r = [(name, val)]
-    return r
+    return _make_elems_str(r)
 
 def _parse_activex_chunk(data):
     """Parse out ActiveX text values from 2007+ activeXN.bin file
     contents.
 
-    @param data (str) The contents of the activeXN.bin to analyze
+    @param data (bytes) The contents of the activeXN.bin to analyze
     (already read in).
 
     @return (str) The ActiveX text value if found, None if not found.
@@ -2914,6 +3183,7 @@ def _parse_activex_chunk(data):
         return None
     start = data.rindex(anchor) + len(anchor) + pad
     pat = r"([\x20-\x7e]+)"
+    data = safe_str_convert(data)
     text = re.findall(pat, data[start:])
     if (len(text) == 0):
         return None
@@ -2952,7 +3222,7 @@ def _parse_activex_rich_edit(data):
     """Parse out Rich Edit control text values from 2007+ activeXN.bin
     file contents.
 
-    @param data (str) The contents of the activeXN.bin to analyze
+    @param data (bytes) The contents of the activeXN.bin to analyze
     (already read in).
 
     @return (str) The ActiveX text value if found, None if not found.
@@ -2960,7 +3230,7 @@ def _parse_activex_rich_edit(data):
     """
 
     # No wide char null padding.
-    data = data.replace("\x00", "")
+    data = safe_str_convert(data).replace("\x00", "")
 
     # Pull out the data.
     pat = r"\\fs\d{1,4} (.+)\\par"
@@ -2988,7 +3258,7 @@ def _get_comments_docprops_2007(unzipped_data):
     f1.close()
 
     # Looks like the comments are in the <dc:description>...</dc:description> block.
-    comm_pat = r"<dc:description>(.*)</dc:description>"
+    comm_pat = br"<dc:description>(.*)</dc:description>"
     comment_blocks = re.findall(comm_pat, data, re.DOTALL)
     if (len(comment_blocks) == 0):
         return []
@@ -2997,7 +3267,8 @@ def _get_comments_docprops_2007(unzipped_data):
     pos = 1
     r = []
     for text in comment_blocks:
-        r.append((pos, _clean_2007_text(text)))
+        new_text = safe_str_convert(_clean_2007_text(text))
+        r.append((pos, new_text))
         pos += 1
 
     # Done.
@@ -3043,7 +3314,7 @@ def _get_comments_2007(fname):
     # Read in all the individual comment XML blocks.
 
     # Comment blocks begin with '<w:comment' and end with '</w:comment>'.
-    comm_pat = r"<w:comment.*</w:comment>"
+    comm_pat = br"<w:comment.*</w:comment>"
     comment_blocks = re.findall(comm_pat, data)
     if (len(comment_blocks) == 0):
         unzipped_data.close()
@@ -3057,14 +3328,14 @@ def _get_comments_2007(fname):
 
         # Pull out the ID for this comment block.
         # <w:comment w:id="1"
-        id_pat = r"<w:comment\s+w:id=\"(\d+)\""
+        id_pat = br"<w:comment\s+w:id=\"(\d+)\""
         ids = re.findall(id_pat, block)
         if (len(ids) == 0):
             continue
         curr_id = ids[0]
 
         # Pull out the comment text.
-        text_pat = r"<w:t[^>]*>([^<]+)</w:t>"
+        text_pat = br"<w:t[^>]*>([^<]+)</w:t>"
         texts = re.findall(text_pat, block)
         if (len(texts) == 0):
             continue
@@ -3072,7 +3343,8 @@ def _get_comments_2007(fname):
         block_text = ""
 
         for text in texts:
-            block_text += _clean_2007_text(text)
+            new_text = safe_str_convert(_clean_2007_text(text))
+            block_text += safe_str_convert(_clean_2007_text(new_text))
 
         # Save the comment.
         r.append((curr_id, block_text))
@@ -3083,7 +3355,7 @@ def _get_comments_2007(fname):
         os.remove(fname)
     #print r
     #sys.exit(0)
-    return r
+    return _make_elems_str(r)
 
 def get_comments(fname):
     """Read the comments from an Office file.
@@ -3101,7 +3373,7 @@ def get_comments(fname):
         return []
 
     # Read comments from 2007+ file.
-    return _get_comments_2007(fname)
+    return _make_elems_str(_get_comments_2007(fname))
 
 def get_shapes_text_values_2007(fname):
     """Read in the text associated with Shape objects in a document saved
@@ -3139,15 +3411,15 @@ def get_shapes_text_values_2007(fname):
     # First see if the shapes text is stored directly in document.xml.
     r = get_shapes_text_values_direct_2007(data)
     if (len(r) > 0):
-        return r
+        return _make_elems_str(r)
     r = get_shapes_text_values_direct_2007_1(data)
     if (len(r) > 0):
         #print r
-        return r
+        return _make_elems_str(r)
     
     # Pull out any shape name to internal ID mappings.
     # <w:control r:id="rId10" w:name="ziPOVJ5" w:shapeid="_x0000_i1028"/>
-    pat = r'<w\:control[^>]+r\:id="(\w+)"[^>]+w\:name="(\w+)"'
+    pat = br'<w\:control[^>]+r\:id="(\w+)"[^>]+w\:name="(\w+)"'
     var_info = re.findall(pat, data)
     id_name_map = {}
     for shape in var_info:
@@ -3172,14 +3444,14 @@ def get_shapes_text_values_2007(fname):
 
     # Pull out any shape name to activeX object ID mappings.
     # <Relationship Id="rId10" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/control" Target="activeX/activeX3.xml"/>
-    pat = r'<Relationship[^>]+Id="(\w+)"[^>]+Target="([^"]+)"'
+    pat = br'<Relationship[^>]+Id="(\w+)"[^>]+Target="([^"]+)"'
     var_info = re.findall(pat, data)
     #print var_info
     id_activex_map = {}
     for shape in var_info:
         if (shape[0] not in id_name_map):
             continue
-        id_activex_map[shape[0]] = shape[1].replace(".xml", ".bin")
+        id_activex_map[shape[0]] = safe_str_convert(shape[1]).replace(".xml", ".bin")
     #print id_activex_map
 
     # Read in the activeX objects.
@@ -3215,7 +3487,7 @@ def get_shapes_text_values_2007(fname):
         os.remove(fname)
     #print r
     #sys.exit(0)
-    return r
+    return _make_elems_str(r)
 
 def get_shapes_text_values(fname, stream):
     """Read in the text associated with Shape objects in the
@@ -3230,34 +3502,51 @@ def get_shapes_text_values(fname, stream):
     """
 
     # Maybe 2007+ file?
+    #print("START: get_shapes_text_values()")
     r = get_shapes_text_values_2007(fname)
     if (len(r) > 0):
-        return r
+        #print("DONE 1: get_shapes_text_values()")
+        return _make_elems_str(r)
     
     r = []
     try:
         # Read the WordDocument stream.
         ole = olefile.OleFileIO(fname, write_mode=False)
+        #print("STREAM: " + safe_str_convert(stream))
         if (not ole.exists(stream)):
+            #print("DONE 2: get_shapes_text_values()")
             return []
         data = ole.openstream(stream).read()
         
         # It looks like maybe(?) the shapes text appears as ASCII blocks bounded by
-        # 0x0D bytes. We will look for that.
-        pat = r"\x0d[\x20-\x7e]{100,}\x0d"
+        # 0x0D bytes (or some other specific byte patterns). We will look for that.
+        # <\x00\r\x0b\x00
+        pat = br"(?:\x0d|(?:<\x00\r\x0b\x00))(?:[\x20-\x7e]|[\r\n\t]){100,}(?:\x0d|(?:<\x00\())"
         strs = re.findall(pat, data)
-        #print "STREAM: " + safe_str_convert(stream)
-        #print data
-        #print "^^^^^^^^^^^"
-        #print strs
+        #print(data)
+        #print("^^^^^^^^^^^")
+        #print(strs)
         
         # Hope that the Shape() object indexing follows the same order as the strings
         # we found.
         pos = 1
         for shape_text in strs:
 
+            # Strip start/end markers from text.
+            #print("@@@@@@")
+            #print(shape_text)
+            if (shape_text.startswith(b"<\x00\r\x0b\x00")):
+                shape_text = shape_text[len("<\x00\r\x0b\x00"):]
+            else:
+                shape_text = shape_text
+            if (shape_text.endswith(b"<\x00(")):
+                shape_text = shape_text[:-len("<\x00(")]
+            else:
+                shape_text = shape_text[:-1]
+            #print("^^^^^^")
+            #print(shape_text)
+                
             # Access value with .TextFrame.TextRange.Text accessor.
-            shape_text = shape_text[1:-1]
             var = "Shapes('" + safe_str_convert(pos) + "').TextFrame.TextRange.Text"
             r.append((var, shape_text))
             
@@ -3275,7 +3564,7 @@ def get_shapes_text_values(fname, stream):
         # It looks like maybe(?) the shapes text appears as wide char blocks bounded by
         # 0x0D bytes. We will look for that.
         #pat = r"\x0d(?:\x00[\x20-\x7e]){10,}\x00?\x0d"
-        pat = r"(?:\x00[\x20-\x7e]){100,}"
+        pat = br"(?:\x00[\x20-\x7e]){100,}"
         strs = re.findall(pat, data)
         
         # Hope that the Shape() object indexing follows the same order as the strings
@@ -3284,7 +3573,7 @@ def get_shapes_text_values(fname, stream):
         for shape_text in strs:
 
             # Access value with .TextFrame.TextRange.Text accessor.
-            shape_text = shape_text[1:-1].replace("\x00", "")
+            shape_text = shape_text[1:-1].replace(b"\x00", b"")
             var = "Shapes('" + safe_str_convert(pos) + "').TextFrame.TextRange.Text"
             r.append((var, shape_text))
             
@@ -3309,7 +3598,8 @@ def get_shapes_text_values(fname, stream):
         if ("not an OLE2 structured storage file" in safe_str_convert(e)):
             r = get_shapes_text_values_xml(fname)
 
-    return r
+    #print("DONE 3: get_shapes_text_values()")
+    return _make_elems_str(r)
 
 
 URL_REGEX = r'(http[s]?://(?:(?:[a-zA-Z0-9_\-]+\.[a-zA-Z0-9_\-\.]+(?::[0-9]+)?)+(?:/[/\?&\~=a-zA-Z0-9_\-\.]+)))'
@@ -3337,7 +3627,7 @@ def pull_urls_from_comments(vba):
         line = line.strip()
         if ((not line.startswith("'")) and (not line.lower().startswith("rem "))):
             continue
-        for url in re.findall(URL_REGEX, line):
+        for url in re.findall(URL_REGEX, safe_str_convert(line)):
             urls.add(url.strip())
 
     # Return the URLs that appear in comments.
@@ -3375,7 +3665,7 @@ def pull_urls_office97(fname, is_data, vba):
     comment_urls = set()
     if (vba is not None):
         comment_urls = pull_urls_from_comments(vba)
-    file_urls = re.findall(URL_REGEX, data)
+    file_urls = re.findall(URL_REGEX, safe_str_convert(data))
     r = set()
     for url in file_urls:
         url = url.strip()
@@ -3414,13 +3704,13 @@ def _read_doc_vars_zip(fname):
     f.close()
 
     # Pull out any doc var names/values.
-    pat = r'<w\:docVar w\:name="(\w+)" w:val="([^"]*)"'
+    pat = br'<w\:docVar w\:name="(\w+)" w:val="([^"]*)"'
     var_info = re.findall(pat, data)
 
     # Unescape XML escaping in variable values.
     r = []
     for i in var_info:
-        val = i[1]
+        val = safe_str_convert(i[1])
         # &quot; &amp; &lt; &gt;
         val = val.replace("&quot;", '"')
         val = val.replace("&amp;", '&')
@@ -3429,7 +3719,7 @@ def _read_doc_vars_zip(fname):
         r.append((i[0], val))
     
     # Return the doc vars.
-    return r
+    return _make_elems_str(r)
     
 def _read_doc_vars_ole(fname):
     """Use a heuristic to try to read in document variable names and
@@ -3484,16 +3774,18 @@ def _read_doc_vars_ole(fname):
             pos += 1
 
         # Return guesses at doc variable assignments.
-        return r
+        return _make_elems_str(r)
             
     except Exception as e:
         log.error("Cannot read document variables. " + safe_str_convert(e))
+        #traceback.print_exc()
+        #sys.exit(0)
         return []
 
 def _read_doc_vars(data, fname):
     """Read document variables from Office 97 or 2007+ files.
 
-    @param data (str) The read in Office file data. Can be None if data
+    @param data (bytes) The read in Office file data. Can be None if data
     should be read from a file (fname).
 
     @param fname (str) The name of the Office file to analyze. Can be
@@ -3521,13 +3813,48 @@ def _read_doc_vars(data, fname):
         r = _read_doc_vars_zip(obj)
     # else, it might be XML or text, can't read doc vars yet
     # TODO: implement read_doc_vars for those formats
-    return r
+    return _make_elems_str(r)
 
+def _get_embedded_files(data, vm):
+    """Pull out what appear to be embedded files from the given
+    document. This gets the original short file name, original long
+    file name, and file contents for each embedded file.
+
+    @param data (bytes) The read in Office file (data).
+
+    @param vm (ViperMonkey object) The ViperMonkey emulation engine
+    object that will do the emulation. The read values will be saved
+    in the given emulation engine.
+
+    The results are saved in the engine's embedded_files field as a
+    list of 3 element tuples where the 1st element is the original
+    short name (str) of the embedded file, the 2nd element is the
+    original long name (str) of the embedded file, and the 3rd element
+    is the file contents.
+
+    """
+
+    # Ugly ugly regex to pull this info from an Office 97 file.
+    log.info("Finding embedded files...")
+    embedded_file_pat = rb"\x02\x00\x02\x00([ -~]{10,200})[^ -~]{1,20}([ -~]{10,200})[^ -~]{1,20}(?:[ -~]?[^ -~]{1,20}){0,5}(?:[ -~]{1,9}?[^ -~]{1,20}){0,5}([ -~]{4,200})" + \
+    rb"[^ -~]{1,20}(?:[ -~]{1,9}?[^ -~]{1,20}){0,5}((?:[ -~]|\n|\r|\t){30,})"
+
+    # Get any file information.
+    matches = re.findall(embedded_file_pat, data)
+    vm.embedded_files = []
+    for info in matches:
+        short_name = info[0]
+        long_name = info[1]
+        embed_contents = info[3][:-1]
+        vm.embedded_files.append((short_name, long_name, embed_contents))
+
+    # Done.
+    
 def _get_inlineshapes_text_values(data):
     """Read in the text associated with InlineShape objects in the
     document. NOTE: This currently is a hack.
 
-    @param data (str) The read in Office file (data).
+    @param data (bytes) The read in Office file (data).
 
     @return (list) The results as a list of 2 element tuples where the
     1st element is the name (str) of an object and the 2nd element is
@@ -3540,7 +3867,7 @@ def _get_inlineshapes_text_values(data):
 
         # It looks like maybe(?) the shapes text appears as text blocks starting at
         # ^@p^@i^@x^@e^@l (wide char "pixel") and ended by several null bytes.
-        pat = r"\x00p\x00i\x00x\x00e\x00l\x00*((?:\x00?[\x20-\x7e])+)\x00\x00\x00"
+        pat = br"\x00p\x00i\x00x\x00e\x00l\x00*((?:\x00?[\x20-\x7e])+)\x00\x00\x00"
         strs = re.findall(pat, data)
 
         # Hope that the InlineShapes() object indexing follows the same order as the strings
@@ -3575,7 +3902,7 @@ def _get_inlineshapes_text_values(data):
         if ("not an OLE2 structured storage file" in safe_str_convert(e)):
             r = get_shapes_text_values_xml(data)
 
-    return r
+    return _make_elems_str(r)
 
 def _read_custom_doc_props(fname):
     """Use a heuristic to try to read in custom document property names
@@ -3605,7 +3932,7 @@ def _read_custom_doc_props(fname):
                 break
         if (data is None):
             return []
-        strs = re.findall("([\w\.\:/]{4,})", data)
+        strs = re.findall("([\w\.\:/]{4,})", safe_str_convert(data))
         
         # Treat each wide character string as a potential variable that has a value
         # of the string 1 positions ahead on the current string. This introduces "variables"
@@ -3635,11 +3962,13 @@ def _read_custom_doc_props(fname):
             pos += 1
 
         # Return guesses at custom doc prop assignments.
-        return r
+        return _make_elems_str(r)
             
     except Exception as e:
         if ("not an OLE2 structured storage file" not in safe_str_convert(e)):
             log.error("Cannot read custom doc properties. " + safe_str_convert(e))
+            #traceback.print_exc()
+            #sys.exit(0)
         return []
 
 def _get_embedded_object_values(fname):
@@ -3687,8 +4016,8 @@ def _get_embedded_object_values(fname):
             # End
 
             # Pull this text out with a regular expression.
-            pat =  r"Begin \{[A-Z0-9\-]{36}\} (\w{1,50})\s*(?:\r?\n)\s{1,10}" + \
-                   r"Caption\s+\=\s+\"(\w+)\"[\w\s\='\n\r]+Tag\s+\=\s+\"(.+)\"[\w\s\='\n\r]+End"
+            pat =  br"Begin \{[A-Z0-9\-]{36}\} (\w{1,50})\s*(?:\r?\n)\s{1,10}" + \
+                   br"Caption\s+\=\s+\"(\w+)\"[\w\s\='\n\r]+Tag\s+\=\s+\"(.+)\"[\w\s\='\n\r]+End"
             obj_text = re.findall(pat, data)
 
             # Save any information we find.
@@ -3699,15 +4028,16 @@ def _get_embedded_object_values(fname):
         if ("not an OLE2 structured storage file" not in safe_str_convert(e)):
             log.error("Cannot read tag/caption from embedded objects. " + safe_str_convert(e))
 
-    return r
+    # Done.
+    return _make_elems_str(r)
 
 def _read_doc_text_libreoffice(data):
     """Read in the document text and tables from a Word file (already
     read in) using LibreOffice.
 
-    @param data (str) The read in Office file (data).
+    @param data (bytes) The read in Office file (data).
 
-    @return (tuple) Returns a tuple containing the doc text and a list
+    @return (tuple) Returns a tuple containing the doc text (str) and a list
     of tuples containing dumped tables.
 
     """
@@ -3737,10 +4067,11 @@ def _read_doc_text_libreoffice(data):
     # Dump all the text using soffice.
     output = None
     try:
-        output = subprocess.check_output(["timeout", "30", "python3", _thismodule_dir + "/../export_doc_text.py",
+        output = subprocess.check_output(["timeout", "30", "python3", "-E", _thismodule_dir + "/../export_doc_text.py",
                                           "--text", "-f", out_dir])
+        output = safe_str_convert(output)
     except Exception as e:
-        log.error("Running export_doc_text.py failed. " + safe_str_convert(e))
+        log.error("Running export_doc_text.py (text) failed. " + safe_str_convert(e))
         os.remove(out_dir)
         return None
 
@@ -3771,14 +4102,13 @@ def _read_doc_text_libreoffice(data):
         r = [first_line] + r[1:]
 
     # Dump all the tables using soffice.
-    output = None
+    output = ""
     try:
-        output = subprocess.check_output(["python3", _thismodule_dir + "/../export_doc_text.py",
+        output = subprocess.check_output(["python3", "-E", _thismodule_dir + "/../export_doc_text.py",
                                           "--tables", "-f", out_dir])
+        output = safe_str_convert(output)
     except Exception as e:
-        log.error("Running export_doc_text.py failed. " + safe_str_convert(e))
-        os.remove(out_dir)
-        return None
+        log.error("Running export_doc_text.py (tables) failed. " + safe_str_convert(e))
 
     # Convert the text to a python list.
     r1 = []
@@ -3793,7 +4123,7 @@ def _read_doc_text_strings(data):
     """Use a heuristic to read in the document text. This is used as a
     fallback if reading the text with libreoffice fails.
 
-    @param data (str) The read in Office file (data).
+    @param data (bytes) The read in Office file (data).
 
     @return (tuple) A 2 element tuple where the 1st element is the
     strings grabbed from the raw Word file data and the 2nd element is
@@ -3802,7 +4132,7 @@ def _read_doc_text_strings(data):
     """
 
     # Pull strings from doc.
-    str_list = re.findall("[^\x00-\x1F\x7F-\xFF]{4,}", data)
+    str_list = re.findall(b"[^\x00-\x1F\x7F-\xFF]{4,}", data)
     r = []
     for s in str_list:
         r.append(s)
@@ -3813,7 +4143,7 @@ def _read_doc_text_strings(data):
 def _read_doc_text(fname, data=None):
     """Read in text from the given document.
 
-    @param data (str) The read in Office file (data).
+    @param data (bytes) The read in Office file (data).
 
     @return (tuple) Returns a tuple containing the doc text and a list
     of tuples containing dumped tables.
@@ -3877,14 +4207,14 @@ def _get_doc_var_info(ole):
     # The fcStwUser field holds the offset of the doc var info in the 0Table or 1Table stream. It is preceded
     # by 119 other 4 byte values, hence the 120*4 offset.
     fib_offset = 32 + 2 + 28 + 2 + 88 + 2 + (120 * 4)
-    tmp = data[fib_offset+3] + data[fib_offset+2] + data[fib_offset+1] + data[fib_offset]
+    tmp = bytes([data[fib_offset+3]]) + bytes([data[fib_offset+2]]) + bytes([data[fib_offset+1]]) + bytes([data[fib_offset]])
     doc_var_offset = struct.unpack('!I', tmp)[0]
 
     # Get the size of the doc vars (lcbStwUser).
     # Get offset to FibRgFcLcb97 (https://msdn.microsoft.com/en-us/library/dd949344(v=office.12).aspx) and then
     # offset to lcbStwUser (https://msdn.microsoft.com/en-us/library/dd905534(v=office.12).aspx).
     fib_offset = 32 + 2 + 28 + 2 + 88 + 2 + (120 * 4) + 4
-    tmp = data[fib_offset+3] + data[fib_offset+2] + data[fib_offset+1] + data[fib_offset]
+    tmp = bytes([data[fib_offset+3]]) + bytes([data[fib_offset+2]]) + bytes([data[fib_offset+1]]) + bytes([data[fib_offset]])
     doc_var_size = struct.unpack('!I', tmp)[0]
     
     return (doc_var_offset, doc_var_size)
@@ -3893,7 +4223,7 @@ def _read_payload_default_target_frame(data, vm):
     """Read and save the custom DefaultTargetFrame value from an Office
     file.
 
-    @param data (str) The read in Office file (data).
+    @param data (bytes) The read in Office file (data).
 
     @param vm (ViperMonkey object) The ViperMonkey emulation engine
     object that will do the emulation. The read values will be saved
@@ -3958,8 +4288,11 @@ def _get_form_var_val(var_name, form_vars):
 
     # Get a reasonable value for the form variable.
     r = form_vars[var_name] if (var_name in form_vars and form_vars[var_name] is not None) else ''
-    r = r.replace('\xb1', '').replace('\x03', '')
-    return r
+    if isinstance(r, bytes):
+        r = r.replace(b'\xb1', b'').replace(b'\x03', b'')
+    else:
+        r = r.replace('\xb1', '').replace('\x03', '')
+    return safe_str_convert(r)
     
 def _read_payload_form_vars(vba, vm):
     """Read and save the text values associated with OLE form variables.
@@ -3984,7 +4317,7 @@ def _read_payload_form_vars(vba, vm):
                 # Get the sanitized field values for the current form var.
 
                 # Var name.
-                var_name = form_variables['name']
+                var_name = safe_str_convert(form_variables['name'])
                 if (var_name is None):
                     continue
 
@@ -3995,7 +4328,7 @@ def _read_payload_form_vars(vba, vm):
                     macro_name = macro_name[start:]
 
                 # Absolute var name.
-                global_var_name = (macro_name + "." + var_name).encode('ascii', 'ignore').replace("\x00", "")
+                global_var_name = (safe_str_convert(macro_name) + "." + safe_str_convert(var_name)).replace("\x00", "")
                 tag = _get_form_var_val('tag', form_variables)
 
                 # Caption for form var.
@@ -4027,6 +4360,7 @@ def _read_payload_form_vars(vba, vm):
                 # take precedence.
 
                 # Save full form variable names.
+                val = safe_str_convert(val)
                 name = global_var_name.lower()                        
                 vm.globals[name] = val
                 if (log.getEffectiveLevel() == logging.DEBUG):
@@ -4154,7 +4488,7 @@ def _read_payload_form_vars(vba, vm):
                 tmp_name = global_var_name_orig.lower() + ".*"
                 #if ((tmp_name not in vm.globals.keys()) or
                 #    (len(form_string) > len(vm.globals[tmp_name]))):
-                if (tmp_name not in vm.globals.keys()):
+                if (tmp_name not in list(vm.globals.keys())):
                     vm.globals[tmp_name] = form_string
                     if (log.getEffectiveLevel() == logging.DEBUG):
                         log.debug("2. Added VBA form variable %r = %r to globals." % (tmp_name, form_string))
@@ -4193,7 +4527,7 @@ def _read_payload_embedded_obj_text(data, vm):
     """Read in and save the tag and caption associated with Embedded OLE
     Objects in an Office document.
 
-    @param data (str) The read in Office file (data).
+    @param data (bytes) The read in Office file (data).
 
     @param vm (ViperMonkey object) The ViperMonkey emulation engine
     object that will do the emulation. The read values will be saved
@@ -4219,7 +4553,7 @@ def _read_payload_custom_doc_props(data, vm):
     """Read in and save custom document property names and values from
     the DocumentSummaryInformation OLE stream.
 
-    @param data (str) The read in Office file (data).
+    @param data (bytes) The read in Office file (data).
 
     @param vm (ViperMonkey object) The ViperMonkey emulation engine
     object that will do the emulation. The read values will be saved
@@ -4237,7 +4571,7 @@ def _read_payload_custom_doc_props(data, vm):
 def _read_payload_textbox_text(data, vba_code, vm):
     """Read in and save text hidden in TextBox and RichText objects.
 
-    @param data (str) The read in Office file (data).
+    @param data (bytes) The read in Office file (data).
 
     @param vba_code (str) The VBA macro code from the Office file.
 
@@ -4256,7 +4590,11 @@ def _read_payload_textbox_text(data, vba_code, vm):
     object_data.extend(tmp_data)
     tmp_data = get_drawing_titles(data)
     object_data.extend(tmp_data)
+    tmp_data = get_variable_values(data, vba_code)
+    object_data.extend(tmp_data)
     for (var_name, var_val) in object_data:
+        var_name = safe_str_convert(var_name)
+        var_val = safe_str_convert(var_val)
         var_name_variants = [var_name,
                              "ActiveDocument." + var_name,
                              var_name + ".Tag",
@@ -4354,7 +4692,7 @@ def _read_payload_inline_shape_text(data, vm):
     """Read in and save the text associated with InlineShape objects in
     the document.
 
-    @param data (str) The read in Office file (data).
+    @param data (bytes) The read in Office file (data).
 
     @param vm (ViperMonkey object) The ViperMonkey emulation engine
     object that will do the emulation. The read values will be saved
@@ -4375,7 +4713,7 @@ def _read_payload_shape_text(data, vm):
     """Read in and save the text associated with Shape objects in a
     document saved as Flat OPC XML files.
 
-    @param data (str) The read in Office file (data).
+    @param data (bytes) The read in Office file (data).
 
     @param vm (ViperMonkey object) The ViperMonkey emulation engine
     object that will do the emulation. The read values will be saved
@@ -4387,6 +4725,7 @@ def _read_payload_shape_text(data, vm):
     log.info("Reading Shapes object text fields...")
     got_it = False
     shape_text = get_shapes_text_values(data, 'worddocument')
+    shape_text.extend(get_shapes_text_values(data, 'workbook'))
     pos = 1
     for (var_name, var_val) in shape_text:
         got_it = True
@@ -4435,7 +4774,7 @@ def _read_payload_shape_text(data, vm):
 def _read_payload_doc_comments(data, vm):
     """Read in and save the comments in an Office document.
 
-    @param data (str) The read in Office file (data).
+    @param data (bytes) The read in Office file (data).
 
     @param vm (ViperMonkey object) The ViperMonkey emulation engine
     object that will do the emulation. The read values will be saved
@@ -4455,7 +4794,7 @@ def _read_payload_doc_comments(data, vm):
 def _read_payload_doc_vars(data, orig_filename, vm):
     """Read and save document variables from Office 97 or 2007+ files.
 
-    @param data (str) The read in Office file data. Can be None if data
+    @param data (bytes) The read in Office file data. Can be None if data
     should be read from a file (orig_fname).
 
     @param orig_fname (str) The name of the Office file to analyze. Can be
@@ -4477,40 +4816,144 @@ def _read_payload_doc_vars(data, orig_filename, vm):
         if (log.getEffectiveLevel() == logging.DEBUG):
             log.debug("Added potential VBA doc variable %r = %r to doc_vars." % (var_name.lower(), var_val))
 
-def _get_embedded_files(data, vm):
-    """Pull out what appear to be embedded files from the given
-    document. This gets the original short file name, original long
-    file name, and file contents for each embedded file.
+def _read_shape_names(data, vm):
+    """Read and save Shape names from Office 2007+ files.
 
-    @param data (bytes) The read in Office file (data).
+    @param data (bytes) The read in Office file data. Can be None if data
+    should be read from a file (orig_fname).
 
     @param vm (ViperMonkey object) The ViperMonkey emulation engine
     object that will do the emulation. The read values will be saved
     in the given emulation engine.
 
-    The results are saved in the engine's embedded_files field as a
-    list of 3 element tuples where the 1st element is the original
-    short name (str) of the embedded file, the 2nd element is the
-    original long name (str) of the embedded file, and the 3rd element
-    is the file contents.
+    """
+
+    # Pull out document variables.
+    log.info("Reading Shape Names...")
+    shape_info = _get_shape_names(data)
+    if (shape_info is None):
+        return
+    for shape_id in shape_info:
+        var_val = shape_info[shape_id]
+        var_name = ".Shapes(" + str(shape_id) + ").Name"
+        vm.doc_vars[var_name] = var_val
+        if (log.getEffectiveLevel() == logging.DEBUG):
+            log.debug("Added potential VBA doc variable %r = %r to doc_vars." % (var_name, var_val))
+        vm.doc_vars[var_name.lower()] = var_val
+        if (log.getEffectiveLevel() == logging.DEBUG):
+            log.debug("Added potential VBA doc variable %r = %r to doc_vars." % (var_name.lower(), var_val))
+        var_name = "ActiveSheet.Shapes(" + str(shape_id) + ").Name"
+        vm.doc_vars[var_name] = var_val
+        if (log.getEffectiveLevel() == logging.DEBUG):
+            log.debug("Added potential VBA doc variable %r = %r to doc_vars." % (var_name, var_val))
+        vm.doc_vars[var_name.lower()] = var_val
+        if (log.getEffectiveLevel() == logging.DEBUG):
+            log.debug("Added potential VBA doc variable %r = %r to doc_vars." % (var_name.lower(), var_val))
+
+def _read_shape_textframe_chars(data, vm):
+    """Read and save Shape.TextFrame.Characters strings from Office 2007+ files.
+
+    @param data (bytes) The read in Office file data. Can be None if data
+    should be read from a file (orig_fname).
+
+    @param vm (ViperMonkey object) The ViperMonkey emulation engine
+    object that will do the emulation. The read values will be saved
+    in the given emulation engine.
 
     """
 
-    # Ugly ugly regex to pull this info from an Office 97 file.
-    log.info("Finding embedded files...")
-    embedded_file_pat = r"\x02\x00\x02\x00([ -~]{10,200})[^ -~]{1,20}([ -~]{10,200})[^ -~]{1,20}(?:[ -~]?[^ -~]{1,20}){0,5}(?:[ -~]{1,9}?[^ -~]{1,20}){0,5}([ -~]{4,200})" + \
-    r"[^ -~]{1,20}(?:[ -~]{1,9}?[^ -~]{1,20}){0,5}((?:[ -~]|\n|\r|\t){30,})"
+    # Pull out document variables.
+    log.info("Reading Shape TextFrame.Characters...")
+    shape_info = _get_shape_textframe_chars(data)
+    if (shape_info is None):
+        return
+    for shape_id in shape_info:
+        var_val = shape_info[shape_id]
+        var_name = ".Shapes(" + str(shape_id) + ").TextFrame.Characters.Text"
+        vm.doc_vars[var_name] = var_val
+        if (log.getEffectiveLevel() == logging.DEBUG):
+            log.debug("Added potential VBA doc variable %r = %r to doc_vars." % (var_name, var_val))
+        vm.doc_vars[var_name.lower()] = var_val
+        if (log.getEffectiveLevel() == logging.DEBUG):
+            log.debug("Added potential VBA doc variable %r = %r to doc_vars." % (var_name.lower(), var_val))
+        var_name = "ActiveSheet.Shapes(" + str(shape_id) + ").TextFrame.Characters.Text"
+        vm.doc_vars[var_name] = var_val
+        if (log.getEffectiveLevel() == logging.DEBUG):
+            log.debug("Added potential VBA doc variable %r = %r to doc_vars." % (var_name, var_val))
+        vm.doc_vars[var_name.lower()] = var_val
+        if (log.getEffectiveLevel() == logging.DEBUG):
+            log.debug("Added potential VBA doc variable %r = %r to doc_vars." % (var_name.lower(), var_val))            
 
-    # Get any file information.
-    matches = re.findall(embedded_file_pat, data)
-    vm.embedded_files = []
-    for info in matches:
-        short_name = info[0]
-        long_name = info[1]
-        embed_contents = info[3][:-1]
-        vm.embedded_files.append((short_name, long_name, embed_contents))
+def _read_simple_forms(data, vm):
+    """Read in and save the tags and captions of forms represented in an
+    Office 97 file in a simple ASCII format.
 
-    # Done.
+    @param data (bytes) The read in Office 97 file (data).
+
+    @param vm (ViperMonkey object) The ViperMonkey emulation engine
+    object that will do the emulation. The read values will be saved
+    in the given emulation engine.
+
+    """
+
+    # Do we need to do this?
+    if ((b"Begin {" not in data) or (b"End" not in data)):
+        return
+
+    # Example of what we are looking for:
+    #
+    #Begin {C62A69F0-16DC-11CE-9E98-00AA00574A4F} ubun3 
+    #   Caption         =   "UserForm1"
+    #   ClientHeight    =   3036
+    #   ClientLeft      =   108
+    #   ClientTop       =   456
+    #   ClientWidth     =   4584
+    #   StartUpPosition =   1  'CenterOwner
+    #   Tag             =   ".com/"
+    #End
+
+    # Pull out the form definition chunks.
+    form_pat =  br"Begin \{[^\}]{3,100}\} [a-zA-Z0-9_\-]{1,200} *\r?\n"
+    form_pat += br"(?: {1,50}[a-zA-Z0-9_\-]{1,200} {1,50}=[^\n]{1,200}\r?\n){1,20}"
+    form_pat += br"End"
+    chunks = re.findall(form_pat, data, re.DOTALL)
+
+    # Pull out the form name, tag, and caption from each form chunk.
+    for chunk in chunks:
+
+        # Get form name.
+        name_pat = br"Begin \{[^\}]{3,100}\} ([a-zA-Z0-9_\-]{1,200}) *\r?\n"
+        name = safe_str_convert(re.findall(name_pat, chunk)[0])
+
+        # Get form tag.
+        tag_pat = br"Tag {1,50}= {1,50}\"([^\"]{0,500})\""
+        tag_info = re.findall(tag_pat, chunk)
+        tag = None
+        if (len(tag_info) > 0):
+            tag = safe_str_convert(tag_info[0])
+
+        # Get form caption.
+        cap_pat = br"Caption {1,50}= {1,50}\"([^\"]{0,500})\""
+        cap_info = re.findall(cap_pat, chunk)
+        caption = None
+        if (len(cap_info) > 0):
+            caption = safe_str_convert(cap_info[0])
+
+        # Add in ViperMonkey variables for the tag and caption.
+        if (tag is not None):
+            tmp_name = "thisdocument." + name + ".tag"
+            vm.doc_vars[tmp_name] = tag
+            tmp_name = "activedocument." + name + ".tag"
+            vm.doc_vars[tmp_name] = tag
+            tmp_name = name + ".tag"
+            vm.doc_vars[tmp_name] = tag
+        if (caption is not None):
+            tmp_name = "thisdocument." + name + ".caption"
+            vm.doc_vars[tmp_name] = caption
+            tmp_name = "activedocument." + name + ".caption"
+            vm.doc_vars[tmp_name] = caption
+            tmp_name = name + ".caption"
+            vm.doc_vars[tmp_name] = caption
             
 def read_payload_hiding_places(data, orig_filename, vm, vba_code, vba):
     """
@@ -4567,16 +5010,23 @@ def read_payload_hiding_places(data, orig_filename, vm, vba_code, vba):
     _read_payload_form_vars(vba, vm)
 
     # Save the form strings.
-    #sys.exit(0)
     _read_payload_form_strings(vba, vm)
 
     # Save DefaultTargetFrame value. This only works for 2007+ files.
     _read_payload_default_target_frame(data, vm)
 
+    # Read in tags and captions for easy to handle form representations.
+    _read_simple_forms(data, vm)
+
+    # Read in embedded Shapes names.
+    _read_shape_names(data, vm)
+
+    # Read in Shapes TextFrame.Characters strings.
+    _read_shape_textframe_chars(data, vm)
     
 ###########################################################################
 ## Main Program
 ###########################################################################
 if __name__ == '__main__':
-    print get_shapes_text_values(sys.argv[1], "worddocument")
-    print get_shapes_text_values(sys.argv[1], '1table')
+    print(get_shapes_text_values(sys.argv[1], "worddocument"))
+    print(get_shapes_text_values(sys.argv[1], '1table'))

@@ -49,20 +49,21 @@ import hashlib
 import traceback
 import re
 import sys
+import datetime
 
-from curses_ascii import isprint
+from vipermonkey.core.curses_ascii import isprint
 import pyparsing
 import logging
-from logger import log
+from vipermonkey.core.logger import log
 
-from utils import safe_print, safe_str_convert
-from vba_context import Context
-from vba_object import VBA_Object, VbaLibraryFunc
-from function_call_visitor import function_call_visitor
-import utils
-from lhs_var_visitor import lhs_var_visitor
-from var_in_expr_visitor import var_in_expr_visitor
-from let_statement_visitor import let_statement_visitor
+from vipermonkey.core.utils import safe_print, safe_str_convert
+from vipermonkey.core.vba_context import Context
+from vipermonkey.core.vba_object import VBA_Object, VbaLibraryFunc
+from vipermonkey.core.function_call_visitor import function_call_visitor
+from vipermonkey.core import utils
+from vipermonkey.core.lhs_var_visitor import lhs_var_visitor
+from vipermonkey.core.var_in_expr_visitor import var_in_expr_visitor
+from vipermonkey.core.let_statement_visitor import let_statement_visitor
 
 def _boilerplate_to_python(indent):
     """Get starting boilerplate code for VB to Python JIT code.
@@ -75,27 +76,30 @@ def _boilerplate_to_python(indent):
 
     """
     indent_str = " " * indent
-    boilerplate = indent_str + "import core.vba_library\n"
-    boilerplate = indent_str + "import core.vba_context\n"
-    boilerplate += indent_str + "from core.utils import safe_print\n"
-    boilerplate += indent_str + "from core.utils import safe_str_convert\n"
-    boilerplate += indent_str + "from core.utils import plus\n"
-    boilerplate += indent_str + "from core.utils import eq\n"
-    boilerplate += indent_str + "from core.utils import neq\n"
-    boilerplate += indent_str + "from core.utils import lt\n"
-    boilerplate += indent_str + "from core.utils import lte\n"
-    boilerplate += indent_str + "from core.utils import gt\n"
-    boilerplate += indent_str + "from core.utils import gte\n"
-    boilerplate += indent_str + "import core.utils\n"
-    boilerplate += indent_str + "from core.python_jit import update_array\n"
-    boilerplate += indent_str + "from core.vba_conversion import coerce_to_num\n"
-    boilerplate += indent_str + "from core.vba_conversion import coerce_to_int\n"
-    boilerplate += indent_str + "from core.vba_conversion import coerce_to_str\n"
-    boilerplate += indent_str + "from core.vba_conversion import coerce_to_int_list\n\n"
+    boilerplate = indent_str + "import traceback\n\n"
+    boilerplate += indent_str + "import vipermonkey.core.vba_library\n"
+    boilerplate += indent_str + "import vipermonkey.core.vba_context\n"
+    boilerplate += indent_str + "from vipermonkey.core.utils import safe_print\n"
+    boilerplate += indent_str + "from vipermonkey.core.utils import safe_str_convert\n"
+    boilerplate += indent_str + "from vipermonkey.core.utils import plus\n"
+    boilerplate += indent_str + "from vipermonkey.core.utils import eq\n"
+    boilerplate += indent_str + "from vipermonkey.core.utils import neq\n"
+    boilerplate += indent_str + "from vipermonkey.core.utils import lt\n"
+    boilerplate += indent_str + "from vipermonkey.core.utils import lte\n"
+    boilerplate += indent_str + "from vipermonkey.core.utils import gt\n"
+    boilerplate += indent_str + "from vipermonkey.core.utils import gte\n"
+    boilerplate += indent_str + "from vipermonkey.core.utils import bool_not\n"
+    boilerplate += indent_str + "import vipermonkey.core.utils\n"
+    boilerplate += indent_str + "from vipermonkey.core.python_jit import update_array\n"
+    boilerplate += indent_str + "from vipermonkey.core.vba_conversion import coerce_to_num\n"
+    boilerplate += indent_str + "from vipermonkey.core.vba_conversion import coerce_to_int\n"
+    boilerplate += indent_str + "from vipermonkey.core.vba_conversion import coerce_to_str\n"
+    boilerplate += indent_str + "from vipermonkey.core.vba_conversion import coerce_to_int_list\n\n"
     boilerplate += indent_str + "try:\n"
     boilerplate += indent_str + " " * 4 + "vm_context\n"
     boilerplate += indent_str + "except (NameError, UnboundLocalError):\n"
     boilerplate += indent_str + " " * 4 + "vm_context = context\n"
+    boilerplate += "\nvar_updates = {}\n"
     return boilerplate
 
 def _get_local_func_type(expr, context):
@@ -113,7 +117,7 @@ def _get_local_func_type(expr, context):
     """
 
     # Sanity check.
-    import expressions
+    from vipermonkey.core import expressions
     if (not isinstance(expr, expressions.Function_Call)):
         return None
 
@@ -143,32 +147,32 @@ def _infer_type_of_expression(expr, context):
 
     """
 
-    import operators
-    import vba_library
+    from vipermonkey.core import operators
+    from vipermonkey.core import vba_library
 
-    #print "LOOK FOR TYPE"
-    #print expr
-    #print type(expr)
+    #print("LOOK FOR TYPE")
+    #print(expr)
+    #print(type(expr))
 
     # Function with a hard coded type?
     if (hasattr(expr, "return_type")):
-        #print "POSSIBLE TYPE (1) '" + safe_str_convert(expr) + "' == " + safe_str_convert(expr.return_type())
+        #print("POSSIBLE TYPE (1) '" + safe_str_convert(expr) + "' == " + safe_str_convert(expr.return_type()))
         return expr.return_type()
 
     # Call of function?
-    import expressions
+    from vipermonkey.core import expressions
     if (isinstance(expr, expressions.Function_Call)):
 
         # Call of builtin function?
         if (expr.name.lower() in vba_library.VBA_LIBRARY):
             builtin = vba_library.VBA_LIBRARY[expr.name.lower()]
             if (hasattr(builtin, "return_type")):
-                #print "POSSIBLE TYPE (2.1) '" + safe_str_convert(expr) + "' == " + safe_str_convert(builtin.return_type())
+                #print("POSSIBLE TYPE (2.1) '" + safe_str_convert(expr) + "' == " + safe_str_convert(builtin.return_type()))
                 return builtin.return_type()
 
         # Call of locally defined function.
         r = _get_local_func_type(expr, context)
-        #print "POSSIBLE TYPE (2.2) '" + safe_str_convert(expr) + "' == " + safe_str_convert(r)
+        #print("POSSIBLE TYPE (2.2) '" + safe_str_convert(expr) + "' == " + safe_str_convert(r))
         return r
         
     # Easy cases. These have to be integers.
@@ -183,12 +187,12 @@ def _infer_type_of_expression(expr, context):
                          operators.Power,
                          operators.Subtraction,
                          operators.Xor)):
-        #print "POSSIBLE TYPE (3) '" + safe_str_convert(expr) + "' == " + "INTEGER"
+        #print("POSSIBLE TYPE (3) '" + safe_str_convert(expr) + "' == " + "INTEGER")
         return "INTEGER"
 
     # Must be a string.
     if (isinstance(expr, operators.Concatenation)):
-        #print "POSSIBLE TYPE (4) '" + safe_str_convert(expr) + "' == " + "STRING"
+        #print("POSSIBLE TYPE (4) '" + safe_str_convert(expr) + "' == " + "STRING")
         return "STRING"
     
     # Harder case. This could be an int or a str (or some other numeric type, but
@@ -197,7 +201,7 @@ def _infer_type_of_expression(expr, context):
 
         # If we are doing subtraction we need numeric types.
         if ((hasattr(expr, "operators")) and ("-" in expr.operators)):
-            #print "POSSIBLE TYPE (5) '" + safe_str_convert(expr) + "' == " + "INTEGER"
+            #print("POSSIBLE TYPE (5) '" + safe_str_convert(expr) + "' == " + "INTEGER")
             return "INTEGER"
         
         # We have only '+'. Try to figure out the type based on the parts of the expression.
@@ -206,11 +210,11 @@ def _infer_type_of_expression(expr, context):
             child_type = _infer_type_of_expression(child, context)
             if (child_type is not None):
                 r_type = child_type
-                #print "POSSIBLE TYPE (6) '" + safe_str_convert(child) + "' == " + safe_str_convert(r_type)
+                #print("POSSIBLE TYPE (6) '" + safe_str_convert(child) + "' == " + safe_str_convert(r_type))
         return r_type
 
     # Can't figure out the type.
-    #print "POSSIBLE TYPE (7) '" + safe_str_convert(expr) + "' == " + "UNKNOWN!!"
+    #print("POSSIBLE TYPE (7) '" + safe_str_convert(expr) + "' == " + "UNKNOWN!!")
     return None
     
 def _infer_type(var, code_chunk, context):
@@ -274,8 +278,8 @@ def _get_var_vals(item, context, global_only=False):
 
     """
 
-    import procedures
-    import statements
+    from vipermonkey.core import procedures
+    from vipermonkey.core import statements
 
     # Get all the variables.
 
@@ -378,14 +382,14 @@ def _get_var_vals(item, context, global_only=False):
         if (val is None):
 
             # Variable is not defined. Try to infer the type based on how it is used.
-            #print "TOP LOOK TYPE: " + safe_str_convert(var)
+            #print("TOP LOOK TYPE: " + safe_str_convert(var))
             var_type, certain_of_type = _infer_type(var, item, context)
-            #print (var_type, certain_of_type)
+            #print((var_type, certain_of_type))
             if (var_type == "INTEGER"):
                 val = "NULL"
                 if certain_of_type:
-                    #print "SET TYPE INT"
-                    #print var
+                    #print("SET TYPE INT")
+                    #print(var)
                     val = 0
                     context.set_type(var, "Integer")
             elif (var_type == "STRING"):
@@ -504,8 +508,8 @@ def exit_loop():
         in_loop = in_loop_stack.pop()
     else:
         log.warning("exit_loop() called with no matching enter_loop() call.")
-        in_loop = False    
-
+        in_loop = False
+    
 def to_python(arg, context, params=None, indent=0, statements=False):
     """Call arg.to_python() if arg is a VBAObject, otherwise just return
     arg as a str.
@@ -528,11 +532,22 @@ def to_python(arg, context, params=None, indent=0, statements=False):
         
     # VBA Object?
     r = None
+    #print(type(arg))
+    #print(hasattr(arg, "to_python"))
+    #print(type(arg.to_python))
     if (hasattr(arg, "to_python") and
         ((safe_str_convert(type(arg.to_python)) == "<type 'method'>") or
-         (safe_str_convert(type(arg.to_python)) == "<type 'instancemethod'>"))):
+         (safe_str_convert(type(arg.to_python)) == "<class 'method'>") or
+         (safe_str_convert(type(arg.to_python)) == "<type 'instancemethod'>") or
+         (safe_str_convert(type(arg.to_python)) == "<class 'instancemethod'>"))):
         r = arg.to_python(context, params=params, indent=indent)
 
+    # Datetime object?
+    elif (isinstance(arg, datetime.datetime)):
+
+        # For now just treat this as a string.
+        r = '"' + str(arg) + '"'
+        
     # String literal?
     elif (isinstance(arg, str)):
 
@@ -579,19 +594,29 @@ def to_python(arg, context, params=None, indent=0, statements=False):
             try:
                 r += to_python(statement, context, indent=indent+4) + "\n"
             except Exception as e:
-                #print statement
-                #print e
+                #print(statement)
+                #print(e)
                 #traceback.print_exc(file=sys.stdout)
                 #sys.exit(0)
                 return "ERROR! to_python failed! " + safe_str_convert(e)
             r += indent_str + "except IndexError as e:\n"
+            if (log.getEffectiveLevel() == logging.DEBUG):
+                r += indent_str + " " * 4 + "traceback.print_exc()\n"
             r += indent_str + " " * 4 + "safe_print(\"VB ERROR: \" + safe_str_convert(e))\n"
-            r += indent_str + " " * 4 + "got_vb_error = True\n"
             if in_loop:
-                # If we are in a loop break out of the loop.
+                # If we are in a loop break out of the loop and track that we have an error.
+                r += indent_str + " " * 4 + "got_vb_error = True\n"
                 r += indent_str + " " * 4 + "break\n"
+            else:
+                # If we are not in a loop pass the exception along.
+                r += indent_str + " " * 4 + "raise(e)\n"
+            r += indent_str + "except RuntimeError as e:\n"
+            if (log.getEffectiveLevel() == logging.DEBUG):
+                r += indent_str + " " * 4 + "safe_print(\"ERROR: \" + safe_str_convert(e))\n"
+            r += indent_str + " " * 4 + "raise(e)\n"
             r += indent_str + "except Exception as e:\n"
             if (log.getEffectiveLevel() == logging.DEBUG):
+                r += indent_str + " " * 4 + "traceback.print_exc()\n"
                 r += indent_str + " " * 4 + "safe_print(\"ERROR: \" + safe_str_convert(e))\n"
             else:
                 r += indent_str + " " * 4 + "pass\n"
@@ -602,13 +627,13 @@ def to_python(arg, context, params=None, indent=0, statements=False):
         try:
             arg_str = safe_str_convert(arg)
         except UnicodeEncodeError:
-            arg_str = filter(isprint, arg)
+            arg_str = list(filter(isprint, arg))
         r = " " * indent + arg_str
-
-    #print "--- to_python() ---"
-    #print arg
-    #print type(arg)
-    #print r
+        
+    #print("--- to_python() ---")
+    #print(arg)
+    #print(type(arg))
+    #print(r)
         
     # Done.
     return r
@@ -660,7 +685,7 @@ def _updated_vars_to_python(loop, context, indent):
     @return (str) Python JIT code.
 
     """
-    import statements
+    from vipermonkey.core import statements
     
     indent_str = " " * indent
     lhs_visitor = lhs_var_visitor()
@@ -682,16 +707,14 @@ def _updated_vars_to_python(loop, context, indent):
         var = var.replace(".", "")
         var_dict_str += '"' + var + '" : ' + py_var
     var_dict_str += "}"
-    save_vals = indent_str + "try:\n"
-    save_vals += indent_str + " " * 4 + "var_updates\n"
-    save_vals += indent_str + " " * 4 + "var_updates.update(" + var_dict_str + ")\n"
-    save_vals += indent_str + "except (NameError, UnboundLocalError):\n"
-    save_vals += indent_str + " " * 4 + "var_updates = " + var_dict_str + "\n"
+    save_vals = ""
+    save_vals += indent_str + "var_updates.update(" + var_dict_str + ")\n"
     save_vals += indent_str + 'var_updates["__shell_code__"] = core.vba_library.get_raw_shellcode_data()\n'
     save_vals = indent_str + "# Save the updated variables for reading into ViperMonkey.\n" + save_vals
     if (log.getEffectiveLevel() == logging.DEBUG):
-        save_vals += indent_str + "print \"UPDATED VALS!!\"\n"
-        save_vals += indent_str + "print var_updates\n"
+        save_vals += indent_str + "print(\"UPDATED VALS!!\")\n"
+        save_vals += indent_str + "print(var_updates)\n"
+    save_vals += "\n" + indent_str + "final_var_updates = var_updates\n"
     return save_vals
 
 def _get_all_called_funcs(item, context):
@@ -820,16 +843,20 @@ def _eval_python(loop, context, params=None, add_boilerplate=False, namespace=No
         return False
 
     # Emulating full VB programs in Python is difficult, so for now skip loops
-    # that Execute() dynamic VB.
-    full_code_vba = safe_str_convert(loop).replace("\n", "\\n")
-    code_vba = full_code_vba[:20]
-    code_vba_lower = full_code_vba.lower()
+    # that do difficult things.
+    code_vba = safe_str_convert(loop)
+    code_vba_lower = code_vba.lower()
+    short_code_vba = code_vba.replace("\n", "\\n")[:20]
     if (not context.throttle_logging):
-        log.info("Starting JIT emulation of '" + code_vba + "...' ...")
-    if (("Execute(".lower() in code_vba_lower) or
-        ("ExecuteGlobal(".lower() in code_vba_lower) or
-        ("Eval(".lower() in code_vba_lower)):
-        log.warning("Loop Execute()s dynamic code. Not JIT emulating.")
+        log.info("Starting JIT emulation of '" + short_code_vba + "...' ...")
+    if (".Item(".lower() in code_vba_lower):
+        log.warning("Loop references forms with .Item(). Not JIT emulating.")
+        return False
+        
+    # The emulation of .WriteText() uses a synthetic variable in the context,
+    # so it does not work cleanly in the Python JIT code.
+    if ('.WriteText('.lower() in code_vba_lower):
+        log.warning("Loop calls .WriteText(). Not JIT emulating.")
         return False
     if (".Item(".lower() in code_vba_lower):
         log.warning("Loop references forms with .Item(). Not JIT emulating.")
@@ -861,11 +888,14 @@ def _eval_python(loop, context, params=None, add_boilerplate=False, namespace=No
         if (log.getEffectiveLevel() == logging.DEBUG):
             safe_print("JIT CODE!!")
             safe_print(code_python)
-            #print "REMOVE THIS!!!"
+            #print("REMOVE THIS!!!")
             #sys.exit(0)
         if (not context.throttle_logging):
             log.info("Done generating Python JIT code.")
 
+        # Bubble up whether we (possibly) accessed a wildcarded boolean value.
+        context.tested_wildcard = tmp_context.tested_wildcard
+            
         # Extended ASCII strings are handled differently in VBScript and VBA.
         # Punt if we are emulating VBA and we have what appears to be extended ASCII
         # strings. For performance we are not handling the MS VBA extended ASCII in the python
@@ -897,6 +927,9 @@ def _eval_python(loop, context, params=None, add_boilerplate=False, namespace=No
             if (var_updates == "ERROR"):
                 log.error("Previous run of Python JIT loop emulation failed. Using fallback emulation for loop.")
                 return False
+            if (var_updates == "INFINITE"):
+                log.error("Previous run of Python JIT loop was an infinite loop. Skipping loop.")
+                return True
 
         # No cached results. Run the loop.
         elif (namespace is None):
@@ -908,7 +941,8 @@ def _eval_python(loop, context, params=None, add_boilerplate=False, namespace=No
             # code recognize functions defined in the dynamic code. I don't know why.
             if (not context.throttle_logging):
                 log.info("Evaluating Python JIT code...")
-            exec code_python in locals()
+            exec(code_python, locals())
+            var_updates = locals()["final_var_updates"]
         else:
 
             # JIT code execution goes not involve emulating VB GOTOs.
@@ -918,14 +952,14 @@ def _eval_python(loop, context, params=None, add_boilerplate=False, namespace=No
             exec(code_python, namespace)
             var_updates = namespace["var_updates"]
         if (not context.throttle_logging):
-            log.info("Done JIT emulation of '" + code_vba + "...' .")
+            log.info("Done JIT emulation of '" + short_code_vba + "...' .")
 
         # Cache the loop results.
         jit_cache[code_python] = var_updates
         
         # Update the context with the variable values from the JIT code execution.
         try:
-            for updated_var in var_updates.keys():
+            for updated_var in list(var_updates.keys()):
                 if (updated_var == "__shell_code__"):
                     continue
                 context.set(updated_var, var_updates[updated_var])
@@ -933,7 +967,7 @@ def _eval_python(loop, context, params=None, add_boilerplate=False, namespace=No
             log.warning("No variables set by Python JIT code.")
 
         # Update shellcode bytes from the JIT emulation.
-        import vba_context
+        from vipermonkey.core import vba_context
         vba_context.shellcode = var_updates["__shell_code__"]
 
     except NotImplementedError as e:
@@ -944,15 +978,20 @@ def _eval_python(loop, context, params=None, add_boilerplate=False, namespace=No
 
     except Exception as e:
 
-        # Cache the error.
-        jit_cache[code_python] = "ERROR"
-        
+        #safe_print("REMOVE THIS!!")
+        #safe_print("-*-*-*-*-\n" + code_python + "\n-*-*-*-*-")
+        #raise e
+                
         # If we bombed out due to a potential infinite loop we
         # are done.
         if ("Infinite Loop" in safe_str_convert(e)):
+            jit_cache[code_python] = "INFINITE"
             log.warning("Detected infinite loop. Terminating loop.")
             return True
 
+        # Cache the error.
+        jit_cache[code_python] = "ERROR"
+        
         # We had some other error. Emulating the loop in Python failed.
         log.error("Python JIT emulation of loop failed. " + safe_str_convert(e) + ". Using fallback emulation method for loop...")
         if (log.getEffectiveLevel() == logging.DEBUG):

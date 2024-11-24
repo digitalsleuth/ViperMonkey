@@ -57,22 +57,27 @@ pyparsing.ParserElement.setDefaultWhitespaceChars(' \t\x19')
 from pyparsing import CaselessKeyword, Group, Optional, Suppress, \
     ZeroOrMore, Literal
 
-from vba_context import Context
-from statements import extend_statement_grammar, public_private, simple_statements_line, \
+from vipermonkey.core.vba_context import Context
+from vipermonkey.core.statements import extend_statement_grammar, public_private, simple_statements_line, \
     bogus_simple_for_each_statement, do_const_assignments, Do_Statement, While_Statement, \
     For_Each_Statement, For_Statement, FollowedBy, Combine, params_list_paren, bad_next_statement, \
     bad_if_statement, statements_line, function_type2, type_expression
-from identifiers import lex_identifier, identifier, TODO_identifier_or_object_attrib, \
+from vipermonkey.core.identifiers import lex_identifier, identifier, TODO_identifier_or_object_attrib, \
     type_suffix
-from comments_eol import EOS, comment_single_quote, rem_statement
-from vba_lines import line_terminator
-import utils
-from utils import safe_str_convert
-from logger import log
-from tagged_block_finder_visitor import tagged_block_finder_visitor
-from vba_object import VBA_Object, eval_arg
-from python_jit import to_python, _check_for_iocs, _get_var_vals
-import vba_conversion
+from vipermonkey.core.comments_eol import EOS, comment_single_quote, rem_statement
+from vipermonkey.core.vba_lines import line_terminator
+from vipermonkey.core import utils
+from vipermonkey.core.utils import safe_str_convert
+from vipermonkey.core.logger import log
+from vipermonkey.core.tagged_block_finder_visitor import tagged_block_finder_visitor
+from vipermonkey.core.vba_object import VBA_Object, eval_arg
+from vipermonkey.core.python_jit import to_python, _check_for_iocs, _get_var_vals
+from vipermonkey.core import vba_conversion
+
+# Track the depth of functions we are working on in to_python() calls.
+# This is used to figure out whether we need to add python global statements
+# or not for certain variables.
+function_depth = 0
 
 # --- SUB --------------------------------------------------------------------
 
@@ -83,6 +88,7 @@ class Sub(VBA_Object):
     
     def __init__(self, original_str, location, tokens):
         super(Sub, self).__init__(original_str, location, tokens)
+        self.gloss = None
         self.name = tokens.sub_name
         self.params = tokens.params
         self.min_param_length = len(self.params)
@@ -101,7 +107,10 @@ class Sub(VBA_Object):
         log.info('parsed %r' % self)
 
     def __repr__(self):
-        return 'Sub %s (%s): %d statement(s)' % (self.name, self.params, len(self.statements))
+        if (self.gloss is not None):
+            return self.gloss
+        self.gloss = 'Sub %s (%s): %d statement(s)' % (self.name, self.params, len(self.statements))
+        return self.gloss
 
     def to_python(self, context, params=None, indent=0):
 
@@ -141,7 +150,7 @@ class Sub(VBA_Object):
         r += indent_str + "def " + safe_str_convert(self.name) + func_args + ":\n"
 
         # Init return value.
-        r += indent_str + " " * 4 + "import core.vba_library\n"
+        r += indent_str + " " * 4 + "import vipermonkey.core.vba_library\n"
         r += indent_str + " " * 4 + "global vm_context\n\n"
         r += indent_str + " " * 4 + "# Function return value.\n"
         r += indent_str + " " * 4 + safe_str_convert(self.name) + " = 0\n\n"
@@ -153,8 +162,11 @@ class Sub(VBA_Object):
         r += "\n"
         
         # Function body.
+        global function_depth
+        function_depth += 1
         r += to_python(self.statements, tmp_context, indent=indent+4, statements=True)
-
+        function_depth -= 1
+        
         # Check for IOCs.
         r += "\n" + _check_for_iocs(self, tmp_context, indent=indent+4)
         
@@ -451,6 +463,7 @@ class Function(VBA_Object):
     
     def __init__(self, original_str, location, tokens):
         super(Function, self).__init__(original_str, location, tokens)
+        self.gloss = None
         self.return_type = None
         if (hasattr(tokens, "return_type")):
             self.return_type = tokens.return_type
@@ -478,7 +491,10 @@ class Function(VBA_Object):
         log.info('parsed %r' % self)
 
     def __repr__(self):
-        return 'Function %s (%s): %d statement(s)' % (self.name, self.params, len(self.statements))
+        if (self.gloss is not None):
+            return self.gloss
+        self.gloss = 'Function %s (%s): %d statement(s)' % (self.name, self.params, len(self.statements))
+        return self.gloss
 
     def to_python(self, context, params=None, indent=0):
         
@@ -516,8 +532,14 @@ class Function(VBA_Object):
         func_args += ")"
         r += indent_str + "def " + safe_str_convert(self.name) + func_args + ":\n"
 
+        # Print debug info.
+        if (log.getEffectiveLevel() == logging.DEBUG):
+            r += indent_str + " " * 4 + "print(\"CALLING: " + safe_str_convert(self.name) + "\")\n"
+            r += indent_str + " " * 4 + "print(\"PARAMS:\")\n"
+            r += indent_str + " " * 4 + "print(" + func_args + ")\n"
+        
         # Init return value.
-        r += indent_str + " " * 4 + "import core.vba_library\n"
+        r += indent_str + " " * 4 + "import vipermonkey.core.vba_library\n"
         r += indent_str + " " * 4 + "global vm_context\n\n"
         r += indent_str + " " * 4 + "# Function return value.\n"
         r += indent_str + " " * 4 + safe_str_convert(self.name) + " = 0\n\n"
@@ -529,17 +551,26 @@ class Function(VBA_Object):
         r += "\n"
             
         # Function body.
+        global function_depth
+        function_depth += 1
         r += to_python(self.statements, tmp_context, indent=indent+4, statements=True)
-
+        function_depth -= 1
+        
         # Check for IOCs.
         r += "\n" + _check_for_iocs(self, tmp_context, indent=indent+4)
+
+        # Print debug info.
+        if (log.getEffectiveLevel() == logging.DEBUG):
+            r += indent_str + " " * 4 + "print(\"RETURN:\")\n"
+            r += indent_str + " " * 4 + "print(\"" + safe_str_convert(self.name) + "\")\n"
+            r += indent_str + " " * 4 + "print(" + safe_str_convert(self.name) + ")\n"
         
         # Return the function return val.
         r += "\n" + indent_str + " " * 4 + "return " + safe_str_convert(self.name) + "\n"
 
         # Done.
         return r
-
+        
     def eval(self, context, params=None):
 
         # create a new context for this execution:
@@ -660,10 +691,15 @@ class Function(VBA_Object):
         # TODO self.call_params
         context.clear_error()
         for s in self.statements:
+
+            # Do we have a statement to emulate?
             if (log.getEffectiveLevel() == logging.DEBUG):
-                log.debug('Function %s eval statement: %s' % (self.name, s))
-            if (isinstance(s, VBA_Object)):
-                s.eval(context=context)
+                log.debug('Function %s eval statement: %s' % (self.name, s))                
+            if (not isinstance(s, VBA_Object)):
+                continue
+
+            # Yes, emulate the statement.
+            s.eval(context=context)
 
             # Have we exited from the function with 'Exit Function'?
             if (context.exit_func):
@@ -760,7 +796,7 @@ class Function(VBA_Object):
                     
             # Copy all the global variables from the function context to the caller
             # context so global updates are tracked.
-            for global_var in context.globals.keys():
+            for global_var in list(context.globals.keys()):
                 caller_context.globals[global_var] = context.globals[global_var]
 
             # Try to identify string decode functions. We are looking
@@ -830,6 +866,7 @@ class PropertyLet(Sub):
     
     def __init__(self, original_str, location, tokens):
         super(PropertyLet, self).__init__(original_str, location, tokens)
+        self.gloss = None
         self.name = tokens.property_name
         self.params = tokens.params
         self.min_param_length = len(self.params)
@@ -849,7 +886,10 @@ class PropertyLet(Sub):
         log.info('parsed %r' % self)
 
     def __repr__(self):
-        return 'Property Let %s (%s): %d statement(s)' % (self.name, self.params, len(self.statements))
+        if (self.gloss is not None):
+            return self.gloss
+        self.gloss = 'Property Let %s (%s): %d statement(s)' % (self.name, self.params, len(self.statements))
+        return self.gloss
 
 # [ Public | Private | Friend ] [ Static ] Property Let name ( [ arglist ], value )
 # [ statements ]
@@ -875,6 +915,7 @@ class PropertyGet(Function):
 
     def __init__(self, original_str, location, tokens):
         super(PropertyGet, self).__init__(original_str, location, tokens)
+        self.gloss = None
         self.name = tokens.property_name
         self.params = tokens.params
         self.min_param_length = len(self.params)
@@ -894,7 +935,10 @@ class PropertyGet(Function):
         log.info('parsed %r' % self)
 
     def __repr__(self):
-        return 'Property Get %s (%s): %d statement(s)' % (self.name, self.params, len(self.statements))
+        if (self.gloss is not None):
+            return self.gloss
+        self.gloss = 'Property Get %s (%s): %d statement(s)' % (self.name, self.params, len(self.statements))
+        return self.gloss
 
 property_get = Optional(CaselessKeyword('Static')) + Optional(CaselessKeyword('Default')) + \
                public_private + \

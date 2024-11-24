@@ -39,8 +39,7 @@ https://github.com/decalage2/ViperMonkey
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 import re
-from curses_ascii import isascii
-from curses_ascii import isprint
+from vipermonkey.core.curses_ascii import isascii, isprint
 import base64
 import string
 
@@ -48,11 +47,11 @@ import logging
 
 # for logging
 try:
-    from core.logger import log
+    from vipermonkey.core.logger import log
 except ImportError:
     from logger import log
 try:
-    from core.logger import CappedFileHandler
+    from vipermonkey.core.logger import CappedFileHandler
 except ImportError:
     from logger import CappedFileHandler
 from logging import LogRecord
@@ -62,7 +61,7 @@ def _test_char(c):
     if isinstance(c, int):
         c = chr(c)
     return (isprint(c) or (c in "\t\n"))
-
+        
 def safe_str_convert(s, strict=False):
     """Convert a string to ASCII without throwing a unicode decode error.
 
@@ -79,17 +78,30 @@ def safe_str_convert(s, strict=False):
     # Handle Excel strings.
     if (isinstance(s, dict) and ("value" in s)):
         s = s["value"]
-
+        
     # Do the actual string conversion.
     try:
+
+        # Handle bytes-like objects.
+        if isinstance(s, bytes):
+            s = s.decode('latin-1')            
+
         # Strip unprintable characters if needed.
         if (strict and isinstance(s, str)):
-            s = filter(_test_char, s)
+            s = ''.join(list(filter(_test_char, s)))
+
+        # Done.
         return str(s)
-    except UnicodeDecodeError:
-        return filter(_test_char, s)
-    except UnicodeEncodeError:
-        return filter(_test_char, s)
+    
+    except (UnicodeDecodeError, UnicodeEncodeError, SystemError):
+        if isinstance(s, bytes):
+            r = ""
+            for c in s:
+                curr_char = chr(c)
+                if (isprint(curr_char)):
+                    r += curr_char
+            return r
+        return ''.join(list(filter(_test_char, s)))
 
 class Infix(object):
     """Used to define our own infix operators.
@@ -108,6 +120,32 @@ class Infix(object):
     def __call__(self, value1, value2):
         return self.function(value1, value2)
 
+def wild_not(x, wildcard_val):
+    """
+    A definition of boolean not that handles ViperMonkey wildcard boolean
+    value strings.
+    
+    @param x (bool or str) The value to negate. Can be the "**MATCH ANY**"
+    wildcard string.
+    
+    @param wildcard_val (bool) The boolean value to use for the "**MATCH ANY**"
+    string.
+    
+    @retval (bool) The negation of the given value.
+    """
+    
+    # Handle wildcard matching.
+    wildcards = ["CURRENT_FILE_NAME", "SOME_FILE_NAME", "**MATCH ANY**"]
+    if (x in wildcards):
+        x = wildcard_val
+
+    # Negate the parameter.
+    return (not x)
+
+# Boolean negation that handles ViperMonkey boolean wildcard values.
+# pylint: disable=unnecessary-lambda
+bool_not=Infix(lambda x,y: wild_not(x, y))
+
 def safe_plus(x,y):
     """Handle "x + y" where x and y could be some combination of ints and
     strs.
@@ -121,7 +159,7 @@ def safe_plus(x,y):
     """
 
     # Handle Excel Cell objects. Grrr.
-    import excel
+    from vipermonkey.core import excel
     if excel.is_cell_dict(x):
         x = x["value"]
     if excel.is_cell_dict(y):
@@ -142,12 +180,12 @@ def safe_plus(x,y):
     # Loosely typed languages are terrible. 1 + "3" == 4 while "1" + 3
     # = "13". The type of the 1st argument drives the dynamic type
     # casting (I think) minus variable type information (Dim a as
-    # String:a = 1 + "3" gets "13", we're ignoring that here). Pure
+    # String: a = 1 + "3" gets "13", we're ignoring that here). Pure
     # garbage.
-    import vba_conversion
-    if (isinstance(x, str)):
+    from vipermonkey.core import vba_conversion
+    if (isinstance(x, str) and (not isinstance(y, str))):
         y = vba_conversion.str_convert(y)
-    if (isinstance(x, int)):
+    if (isinstance(x, int) and (not isinstance(y, int))):
         y = vba_conversion.int_convert(y)
 
     # Easy case first.
@@ -261,11 +299,15 @@ def safe_gt(x,y):
         
     # Since we are doing > both values should be numbers.
     try:
-        from vba_conversion import coerce_to_num
+        from vipermonkey.core.vba_conversion import coerce_to_num
         x = coerce_to_num(x)
         y = coerce_to_num(y)
     except ValueError:
-        return False
+
+        # One of them can't be converted to a number. Convert both to strings
+        # and hope for the best.
+        x = safe_str_convert(x)
+        y = safe_str_convert(y)
 
     # Return the numeric comparison.
     return (x > y)
@@ -273,7 +315,7 @@ def safe_gt(x,y):
 # Safe > and < infix operators. Ugh. Loosely typed languages are terrible.
 # pylint: disable=unnecessary-lambda
 gt=Infix(lambda x,y: safe_gt(x, y))
-lt=Infix(lambda x,y: (not safe_gt(x, y)))
+lt=Infix(lambda x,y: (not safe_gt(x, y)) and (not safe_equals(x,y)))
 gte=Infix(lambda x,y: (safe_gt(x, y) or safe_equals(x,y)))
 lte=Infix(lambda x,y: (not safe_gt(x, y) or safe_equals(x,y)))
 
@@ -337,12 +379,7 @@ def b64_decode(value):
 
     try:
         # Make sure this is a potentially valid base64 string
-        tmp_str = ""
-        try:
-            tmp_str = filter(isascii, str(value).strip())
-        except UnicodeDecodeError:
-            return None
-        tmp_str = tmp_str.replace(" ", "").replace("\x00", "")
+        tmp_str = safe_str_convert(value).replace(" ", "").replace("\x00", "")
         b64_pat = r"^[A-Za-z0-9+/=]+$"
         if (re.match(b64_pat, tmp_str) is not None):
             
@@ -353,7 +390,7 @@ def b64_decode(value):
         
             # Return the decoded value.
             conv_val = base64.b64decode(tmp_str)
-            return conv_val
+            return safe_str_convert(conv_val)
     
     # Base64 conversion error.
     except Exception:
@@ -459,12 +496,7 @@ def strip_nonvb_chars(s):
     """
 
     # Handle unicode strings.
-    if (isinstance(s, unicode)):
-        s = s.encode('ascii','replace')
-    
-    # Sanity check.
-    if (not isinstance(s, str)):
-        return s
+    s = safe_str_convert(s)
 
     # Do we need to do this?
     if (re.search(r"[^\x09-\x7e]", s) is None):
@@ -478,3 +510,12 @@ def strip_nonvb_chars(s):
         r = r.replace("NULL", "")
     return r
     
+def isascii(s):
+    """Check if the characters in string s are in ASCII, U+0-U+7F.
+    Taken from https://stackoverflow.com/questions/196345/how-to-check-if-a-string-in-python-is-in-ascii
+
+    @param s (str) String to check.
+
+    @return (boolean) True if all ASCII, False if not.
+    """
+    return len(s) == len(s.encode())

@@ -50,7 +50,7 @@ import logging
 import os
 from hashlib import sha256
 from datetime import datetime
-from logger import log
+from vipermonkey.core.logger import log
 import re
 try:
     # sudo pypy -m pip install rure
@@ -64,9 +64,10 @@ import codecs
 import copy
 import struct
 
-import vba_constants
-import utils
-from utils import safe_str_convert
+from vipermonkey.core import vba_constants
+from vipermonkey.core import utils
+from vipermonkey.core.utils import safe_str_convert
+from vipermonkey.core import excel
 
 def to_hex(s):
     """Convert a string to a VBA hex string.
@@ -96,6 +97,42 @@ def is_procedure(vba_object):
     """
     return hasattr(vba_object, 'statements')
 
+varptr_data = None
+def add_varptr_data(data):
+    """Save the bytes written via a VarPtr() call. These are (probably?)
+    shell code bytes (or at least we will treat them as such).
+
+    @param data (list) Numeric byte values.
+
+    """
+
+    # Punt if we were not given a list.
+    global varptr_data
+    if (not isinstance(data, list)):
+        log.warning("VarPtr() called on something other than array of bytes.")
+        return
+
+    # Convert each byte value to an int (if possible).
+    tmp = []
+    for val in data:
+        try:
+
+            # Is it an int?
+            curr_val = int(val)
+
+            # Only want unsigned integers for byte values.
+            if (curr_val < 0):
+                curr_val += 2**8
+
+            # Save it.
+            tmp.append(curr_val)
+            
+        except ValueError:
+            return
+
+    # Save the bytes.
+    varptr_data = tmp
+    
 def add_shellcode_data(index, value, num_bytes):
     """Save injected shellcode data.
 
@@ -133,12 +170,12 @@ def get_shellcode_data():
     """
 
     # Punt if there is no shellcode data.
-    if (len(shellcode) == 0):
+    if ((len(shellcode) == 0) and (varptr_data is None)):
         return []
 
     # Get the shellcode bytes in order. Assume any missing
     # bytes are x86 NOOP instructions.
-    indices = shellcode.keys()
+    indices = list(shellcode.keys())
     indices.sort()
     last_i = None
     r = []
@@ -160,8 +197,14 @@ def get_shellcode_data():
         r.append(curr_val)
         last_i = i
 
-    # Return shellcode bytes, in order.
-    return r
+    # Return shellcode bytes, in order, if we had bytes from individual byte writes.
+    if (len(r) > 0):
+        return r
+
+    # If we get here we have shellcode (assumed) bytes from a VarPtr() call.
+    if (varptr_data is not None):
+        return varptr_data
+    return []
     
 
 # === VBA CLASSES =====================================================================================================
@@ -363,7 +406,7 @@ class Context(object):
                 self.globals = _globals
 
             # Save intermediate IOCs if any appear.
-            for var in _globals.keys():
+            for var in list(_globals.keys()):
                 self.save_intermediate_iocs(_globals[var])
                 
         elif context is not None:
@@ -425,7 +468,7 @@ class Context(object):
             self.doc_vars = doc_vars
 
             # Save intermediate IOCs if any appear.
-            for var in doc_vars.keys():
+            for var in list(doc_vars.keys()):
                 self.save_intermediate_iocs(doc_vars[var])
 
         elif context is not None:
@@ -473,10 +516,10 @@ class Context(object):
             globals_eq = (self.globals == other.globals)
             if (not globals_eq):
                 s1 = set()
-                for i in self.globals.items():
+                for i in list(self.globals.items()):
                     s1.add(safe_str_convert(i))
                 s2 = set()
-                for i in other.globals.items():
+                for i in list(other.globals.items()):
                     s2.add(safe_str_convert(i))
                 if (safe_str_convert(s1 ^ s2) == "set([])"):
                     globals_eq = True
@@ -531,7 +574,7 @@ class Context(object):
 
         # Done.
         return r
-            
+    
     def read_metadata_item(self, var):
         """Read a metadata item from the current context.
 
@@ -558,7 +601,7 @@ class Context(object):
             return ""
 
         # We have the attribute. Return it.
-        r = getattr(self.metadata, var)
+        r = safe_str_convert(getattr(self.metadata, var))
 
         # Handle MS encoding of "\r" and "\n".
         r = r.replace("_x000d_.", "\r\n")
@@ -829,7 +872,7 @@ class Context(object):
         # Also look for the last saved file.
         longest = ""
         cdrive = None
-        for file_id in self.open_files.keys():
+        for file_id in list(self.open_files.keys()):
             if ((self.last_saved_file is not None) and (safe_str_convert(file_id).lower() == self.last_saved_file.lower())):
                 cdrive = file_id
                 break
@@ -871,9 +914,9 @@ class Context(object):
         fname = fname.replace(".\\", "").replace("\\", "/")
 
         # Don't reopen already opened files.
-        return (fname in self.open_files.keys())
+        return (fname in list(self.open_files.keys()))
         
-    def open_file(self, fname, file_id=""):
+    def open_file(self, fname, file_id="", append=False):
         """Simulate opening a file.
 
         @see get_interesting_fileid
@@ -889,23 +932,31 @@ class Context(object):
 
         @param file_id (str) The numeric ID of the file.
 
+        @param append (boolean) If True pull data that was already
+        written to the file to use as the initial file contents, if
+        False the file contents are empty.
+
         """
         # Save that the file is opened.
         fname = safe_str_convert(fname)
         fname = fname.replace(".\\", "").replace("\\", "/")
 
         # Don't reopen already opened files.
-        if (fname in self.open_files.keys()):
+        if (fname in list(self.open_files.keys())):
             log.warning("File " + safe_str_convert(fname) + " is already open.")
             return
 
         # Open the simulated file.
-        self.open_files[fname] = b''
+        self.open_files[fname] = ''
         if (file_id != ""):
             self.file_id_map[file_id] = fname
         log.info("Opened file " + fname)
+
+        # Are we appending to a file we wrote to previously?
+        if append and (fname in self.closed_files):
+            self.open_files[fname] = self.closed_files[fname]
         
-    def write_file(self, fname, data):
+    def write_file(self, fname, data, binary=False):
         """Simulate writing to a file.
 
         @see get_interesting_fileid
@@ -922,11 +973,18 @@ class Context(object):
         
         @param data (str) The data to write.
 
+        @param binary (boolean) Set to True if the given data is
+        binary data that should be left unmodified, False if the data
+        is a string that can be modified.
+
         @return (boolean) True if the simulated write succeeded, False
         if it failed.
 
         """
-        
+
+        # Handle Excel cell data structures.
+        if excel.is_cell_dict(data):
+            data = data["value"]
         
         # Make sure the "file" exists.
         fname = safe_str_convert(fname)
@@ -934,7 +992,7 @@ class Context(object):
         if fname not in self.open_files:
 
             # Are we referencing this by numeric ID.
-            if (fname in self.file_id_map.keys()):
+            if (fname in list(self.file_id_map.keys())):
                 fname = self.file_id_map[fname]
             else:
 
@@ -944,7 +1002,7 @@ class Context(object):
                     var_name = fname[1:]
                     if self.contains(var_name):
                         fname = "#" + safe_str_convert(self.get(var_name))
-                        if (fname in self.file_id_map.keys()):
+                        if (fname in list(self.file_id_map.keys())):
                             got_it = True
                             fname = self.file_id_map[fname]
                 
@@ -959,15 +1017,17 @@ class Context(object):
             # Hex string?
             if ((len(data.strip()) == 4) and (re.match('&H[0-9A-F]{2}', data, re.IGNORECASE))):
                 data = chr(int(data.strip()[-2:], 16))
-
-            self.open_files[fname] += data
+            write_data = data
+            if not binary:
+                write_data = safe_str_convert(data)
+            self.open_files[fname] += write_data
             return True
 
         # Are we writing a list?
         elif isinstance(data, list):
             for d in data:
                 if (isinstance(d, int)):
-                    self.open_files[fname] += chr(d)
+                    self.open_files[fname] += safe_str_convert(chr(d))
                 else:
                     self.open_files[fname] += safe_str_convert(d)
             return True
@@ -993,8 +1053,17 @@ class Context(object):
             
             # Write out each byte.
             for b in byte_list:
+                if isinstance(b, int):
+                    b = chr(b)
                 self.open_files[fname] += b
             return True
+
+        # Are we writing a blob of bytes?
+        elif isinstance(data, bytes):
+            for b in data:
+                if isinstance(b, int):
+                    b = chr(b)
+                self.open_files[fname] += b
         
         # Unhandled.
         else:
@@ -1017,7 +1086,7 @@ class Context(object):
         after dumping, if False leave them open.
 
         """
-        for fname in self.open_files.keys():
+        for fname in list(self.open_files.keys()):
             self.dump_file(fname, autoclose=autoclose)
 
     def get_num_open_files(self):
@@ -1061,7 +1130,7 @@ class Context(object):
         if fname not in self.open_files:
 
             # Are we referencing this by numeric ID.
-            if (fname in self.file_id_map.keys()):
+            if (fname in list(self.file_id_map.keys())):
                 file_id = fname
                 fname = self.file_id_map[fname]
             else:
@@ -1071,7 +1140,7 @@ class Context(object):
         log.info("Closing file " + fname)
 
         # Get the data written to the file and track it.
-        data = self.open_files[fname]
+        data = safe_str_convert(self.open_files[fname])
         self.closed_files[fname] = data
 
         # Clear the file out of the open files.
@@ -1110,7 +1179,15 @@ class Context(object):
                 
         # Hash the data to be saved.
         raw_data = self.closed_files[fname]
-        file_hash = sha256(raw_data).hexdigest()
+        file_hash = None
+        if isinstance(raw_data, bytes):
+            file_hash = sha256(raw_data).hexdigest()
+        else:
+            try:
+                file_hash = sha256(bytes(raw_data, "latin-1")).hexdigest()
+            except UnicodeEncodeError:
+                raw_data = safe_str_convert(raw_data, strict=True)
+                file_hash = sha256(bytes(raw_data, "latin-1")).hexdigest()
 
         # TODO: Set a flag to control whether to dump file contents.
 
@@ -1147,8 +1224,15 @@ class Context(object):
 
             # Write out the dropped file.
             with open(file_path, 'wb') as f:
-                f.write(raw_data)
+                if isinstance(raw_data, bytes):                
+                    f.write(raw_data)
+                else:
+                    f.write(bytes(raw_data, "latin-1"))
             log.info("Wrote dumped file (hash " + safe_str_convert(file_hash) + ") to " + safe_str_convert(file_path) + ".")
+
+            # Pull IOCs from file data.
+            self.save_intermediate_iocs(raw_data)
+            
         except Exception as e:
             log.error("Writing file " + safe_str_convert(fname) + " failed with error: " + safe_str_convert(e))
 
@@ -1165,7 +1249,7 @@ class Context(object):
 
         """
         
-        if (not isinstance(name, basestring)):
+        if (not isinstance(name, str)):
             raise KeyError('Object %r not found' % name)
         
         # Search in the global VBA library:
@@ -1207,7 +1291,7 @@ class Context(object):
         @throws KeyError Thrown if the named variable is not found.
 
         """        
-        if (not isinstance(name, basestring)):
+        if (not isinstance(name, str)):
             raise KeyError('Object %r not found' % name)
 
         # Flag if this is a change handler lookup.
@@ -1241,7 +1325,8 @@ class Context(object):
                 log.debug('Found %r in globals (%r)' % (name, type(self.globals[name])))
             if is_change_handler: self.has_change_handler[change_name] = True
             self.name_cache[orig_name] = name
-            return self.globals[name]
+            r = self.globals[name]
+            return r
 
         # next, search in the global VBA library:
         elif ((not local_only) and (name in VBA_LIBRARY)):
@@ -1420,13 +1505,23 @@ class Context(object):
                     return r
                 except KeyError:
                     pass
+
+        # Does the variable end with a trailing '$'?
+        if (name.endswith("$")):
+
+            # Try it without the trailing '$'.
+            return self.__get(safe_str_convert(name)[:-1],
+                              case_insensitive=case_insensitive,
+                              local_only=local_only,
+                              global_only=global_only)
             
         # See if the variable was initially defined with a trailing '$'.
-        return self.__get(safe_str_convert(name) + "$",
-                          case_insensitive=case_insensitive,
-                          local_only=local_only,
-                          global_only=global_only)
-
+        else:
+            return self.__get(safe_str_convert(name) + "$",
+                              case_insensitive=case_insensitive,
+                              local_only=local_only,
+                              global_only=global_only)
+        
     def _get_all_metadata(self, name):
         """Return all items in ActiveDocument.BuiltInDocumentProperties or
         ThisDocument.BuiltInDocumentProperties. For each metadata item
@@ -1505,8 +1600,7 @@ class Context(object):
         """
         
         # Sanity check.
-        if ((name is None) or
-            (isinstance(name, str) and (len(name.strip()) == 0))):
+        if ((name is None) or (len(safe_str_convert(name).strip()) == 0)):
             raise KeyError('Object %r not found' % name)
         
         # Short circuit looking for variable change handlers if possible.
@@ -1565,6 +1659,9 @@ class Context(object):
         context, False if not.
 
         """
+        # All spaces is not a valid variable name.
+        if (safe_str_convert(name).strip() == ""):
+            return False
         if (local):
             return (safe_str_convert(name).lower() in self.locals)
         try:
@@ -1609,7 +1706,7 @@ class Context(object):
         @throws KeyError This is thrown if the variable is not found.
 
         """
-        if (not isinstance(var, basestring)):
+        if (not isinstance(var, str)):
             return None
         var = var.lower()
         if (var not in self.types):
@@ -1628,7 +1725,7 @@ class Context(object):
         variable, if not found return None.
 
         """
-        if (not isinstance(var, basestring)):
+        if (not isinstance(var, str)):
             return None
 
         # Normalize the variable name to lower case.
@@ -1649,7 +1746,7 @@ class Context(object):
 
             # Return these as (name, value) tuples.
             r = []
-            for var_name in self.doc_vars.keys():
+            for var_name in list(self.doc_vars.keys()):
                 r.append((var_name, self.doc_vars[var_name]))                
             return r
         
@@ -1709,39 +1806,47 @@ class Context(object):
         """
 
         global num_b64_iocs
+
+        # The given value may be a list. Process each item.
+        if (isinstance(value, list)):
+            for v in value:
+                self.save_intermediate_iocs(v)
+            return
         
         # Strip NULLs and unprintable characters from the potential IOC.
-        value = utils.strip_nonvb_chars(value)
+        value = utils.strip_nonvb_chars(safe_str_convert(value))
         if (len(re.findall(r"NULL", safe_str_convert(value))) > 20):
-            value = safe_str_convert(value).replace("NULL", "")
-
+            value = value.replace("NULL", "")
+        # ` is not interesting for b64 or URLs.
+        value = value.replace("`", "")
+            
+        # If the value is too short or it is an integer we are not interested in it.
+        if ((len(value) < 10) or (value.isdigit())):
+            return
+            
         # Is there a URL in the data?
+        pulled_iocs = set()
         got_ioc = False
-        URL_REGEX = r'.*([hH][tT][tT][pP][sS]?://(([a-zA-Z0-9_\-]+\.[a-zA-Z0-9_\-\.]+(:[0-9]+)?)+(/([/\?&\~=a-zA-Z0-9_\-\.](?!http))+)?)).*'
-        value = safe_str_convert(value).strip()
-        tmp_value = value
-        if (len(tmp_value) > 100):
-            tmp_value = tmp_value[:100] + " ..."
-        if (re.match(URL_REGEX, value) is not None):
-            if (value not in intermediate_iocs):
-                got_ioc = True
-                log.info("Found possible intermediate IOC (URL): '" + tmp_value + "'")
+        if ("http" in value.lower()):
+            URL_REGEX = r'.*([hH][tT][tT][pP][sS]?://(([a-zA-Z0-9_\-]+\.[a-zA-Z0-9_\-\.]+(:[0-9]+)?)+(/([/\?&\~=a-zA-Z0-9_\-\.](?!http))+)?)).*'
+            value = safe_str_convert(value).strip()
+            tmp_value = value
+            if (len(tmp_value) > 800):
+                tmp_value = tmp_value[:800] + " ..."
+            if (re.match(URL_REGEX, value) is not None):
+                if (value not in intermediate_iocs):
+                    got_ioc = True
+                    pulled_iocs.add(tmp_value)
 
         # Is there base64 in the data? Don't track too many base64 IOCs.
         if ((num_b64_iocs < 200) and (value not in intermediate_iocs)):
-            uni_value = None
-            try:
-                uni_value = value.decode("utf-8")
-            except UnicodeDecodeError:
-                pass
-            if (uni_value is not None):
-                B64_REGEX = r"(?:[A-Za-z0-9+/]{4}){10,}(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?"
-                b64_strs = re2.findall(unicode(B64_REGEX), uni_value)
-                for curr_value in b64_strs:
-                    if (len(curr_value) > 100):
-                        got_ioc = True
-                        num_b64_iocs += 1
-                        log.info("Found possible intermediate IOC (base64): '" + curr_value + "'")
+            B64_REGEX = r"(?:[A-Za-z0-9+/]{4}){10,}(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?"
+            b64_strs = re2.findall(B64_REGEX, value)
+            for curr_value in b64_strs:
+                if (len(curr_value) > 100):
+                    got_ioc = True
+                    num_b64_iocs += 1
+                    pulled_iocs.add(curr_value)
 
         # Did we find anything?
         if (not got_ioc):
@@ -1749,16 +1854,21 @@ class Context(object):
         
         # Is this new and interesting?
         iocs_to_delete = set()
-        got_ioc = True
+        got_ioc = (len(intermediate_iocs) == 0)
+        tmp_iocs = set()
         for old_value in intermediate_iocs:
-            if (value.startswith(old_value)):
-                iocs_to_delete.add(old_value)
-            if ((old_value.startswith(value)) and (len(old_value) > len(value))):
-                got_ioc = False
+            for new_value in pulled_iocs:
+                if (new_value.startswith(old_value) and (new_value != old_value)):
+                    iocs_to_delete.add(old_value)
+                if (not ((old_value.startswith(new_value)) and (len(old_value) > len(new_value)))):
+                    got_ioc = True
+                    tmp_iocs.add(new_value)
 
         # Add the new IOC if it is interesting.
         if (got_ioc):
-            intermediate_iocs.add(value)
+            for new_value in pulled_iocs:
+                log.info("Found possible intermediate IOC: '" + new_value + "'")
+                intermediate_iocs.add(new_value)
             
         # Delete old IOCs if needed.
         for old_ioc in iocs_to_delete:
@@ -1787,14 +1897,15 @@ class Context(object):
             return False
         
         # Are we setting a cell formula?
-        import expressions
-        import vba_object
+        from vipermonkey.core import expressions
+        from vipermonkey.core import vba_object
         if (not isinstance(name, expressions.MemberAccessExpression)):
             return False
         tmp_rhs = safe_str_convert(name.rhs)
         if (isinstance(name.rhs, list)):
             tmp_rhs = safe_str_convert(name.rhs[-1])
         if ((tmp_rhs.lower() != "formulalocal") and
+            (tmp_rhs.lower() != "formula") and
             (tmp_rhs.lower() != "value") and
             (tmp_rhs.lower() != "name")):
             return False
@@ -1846,7 +1957,7 @@ class Context(object):
 
         """
 
-        import procedures
+        from vipermonkey.core import procedures
         
         # Do we know the value of the variable?
         if (not self.contains(name)):
@@ -1862,7 +1973,64 @@ class Context(object):
 
         # Handled property assignment.
         return True
-    
+
+    def _handle_privateprofilestring(self, name, value):
+        """Handle setting a registry key using
+        System.PrivateProfileString().
+
+        @param name (??) The item being assigned a value.
+        
+        @param value (??) The value to which the item is being set.
+
+        @return (boolean) True if this is a property
+        System.PrivateProfileString(), False if not.
+
+        """
+
+        # This should be a MemberAccessExpression if it is a
+        # System.PrivateProfileString() assignment.
+        from vipermonkey.core import expressions
+        if (not isinstance(name, expressions.MemberAccessExpression)):
+            return False
+
+        # Is it a System.PrivateProfileString() assignment?
+        if (not str(name).strip().startswith("System.PrivateProfileString(")):
+            return False
+
+        # We have one. Pull out the registry key.
+        if ((not isinstance(name.rhs, list)) or
+            (len(name.rhs) == 0) or
+            (not isinstance(name.rhs[0], expressions.Function_Call)) or
+            (len(name.rhs[0].params) < 2)):
+            return False
+        key = safe_str_convert(name.rhs[0].params[1])
+        value = safe_str_convert(value)
+
+        # Track the registry write.
+        self.report_action("Registry Write", key + " = " + value, "System.PrivateProfileString()", strip_null_bytes=True)
+
+        # Done.
+        return True
+
+    def _handle_set_word_text(self, name, value):
+        """Handle setting the text in a Word document. This method will update
+        the document paragraphs based on the Word text.
+
+        @param name (??) The item being assigned a value.
+        
+        @param value (??) The value to which the item is being set.
+
+        """
+
+        # Are we setting the Word document text?
+        name = safe_str_convert(name)
+        if (name.lower().strip() != "ActiveDocument.Range.Text".lower()):
+            return
+
+        # Break the doc text up into "paragraphs" and save them.
+        value = safe_str_convert(value)
+        self.set("ActiveDocument.Paragraphs", value.split("\n"))
+        
     def set(self,
             name,
             value,
@@ -1911,17 +2079,22 @@ class Context(object):
         if (self._handle_property_assignment(name, value)):
             return
 
-        # We might have a vipermonkey simple name expression. Convert to a string
-        # so we can use it.
-        import expressions
-        if (isinstance(name, expressions.SimpleNameExpression)):
-            name = safe_str_convert(name)
-        
+        # Are we assigning a registry key using System.PrivateProfileString()?
+        if (self._handle_privateprofilestring(name, value)):
+            return
+
+        # Are we setting the text in a Word document?
+        self._handle_set_word_text(name, value)
+
         # Does the name make sense?
         orig_name = name
-        if (not isinstance(name, basestring)):
-            log.warning("context.set() " + safe_str_convert(name) + " is improper type. " + safe_str_convert(type(name)))
+        if (not isinstance(name, str)):
+            log.warning("context.set() var name " + safe_str_convert(name) + " is improper type. " + safe_str_convert(type(name)))
             name = safe_str_convert(name)
+        
+        # Report on setting the language of a ScriptControl object.
+        if (name.endswith(".Language")):
+            self.report_action('Set Dynamic Script Language', safe_str_convert(value), "ScriptControl Object")
 
         # Does the value make sense?
         if (value is None):
@@ -1936,7 +2109,15 @@ class Context(object):
         # Skip this if this variable is already set and we are not allowing value overwrites.
         if (no_overwrite and self.contains(name)):
             return
-            
+
+        # Treat things like document variables, form captions, etc. as global variables.
+        if ("." in name):
+            suffix = name[name.rindex("."):].strip().lower()
+            fields = set([".caption", ".tag", ".text", ".name", ".alternativetext", ".controltiptext"])
+            if (suffix in fields):
+                log.warning("Saving " + name + " as a global variable.")
+                force_global = True
+        
         # Save IOCs from intermediate values if needed.
         self.save_intermediate_iocs(value)
         
@@ -1952,7 +2133,7 @@ class Context(object):
 
             # See if this is actually referring to a global variable.
             name_str = name_str[:name_str.index("(")].strip()
-            if (name_str in self.globals.keys()):
+            if (name_str in list(self.globals.keys())):
                 force_global = True
 
         # This should be a global variable if we are not in a function.
@@ -2040,7 +2221,8 @@ class Context(object):
             try:
 
                 # Is this a Microsoft.XMLDOM object?
-                import vba_object
+                from vipermonkey.core import vba_object
+                from vipermonkey.core import expressions
                 node_type = orig_name
                 if (isinstance(orig_name, expressions.MemberAccessExpression)):
                     node_type = orig_name.lhs
@@ -2065,14 +2247,20 @@ class Context(object):
                     self.set(val_name, conv_val, no_conversion=True, do_with_prefix=do_with_prefix)
 
         # Handle hex conversion with VBA objects.
-        if (name.lower().endswith(".nodetypedvalue")):
+        if ((name.lower().endswith(".nodetypedvalue")) or (name.lower().endswith(".text"))):
 
+            # Figure out in which field to put the decoded value.
+            decode_field = ".Text"
+            if (name.lower().endswith(".text")):
+                decode_field = ".NodeTypedValue"
+                
             # Handle doing conversions on the data.
             node_type = name[:name.rindex(".")] + ".datatype"
             try:
 
                 # Something set to type "bin.hex"?
                 val = safe_str_convert(self.get(node_type)).strip()
+                conv_val = None
                 if (val.lower() == "bin.hex"):
 
                     # Try converting from hex.
@@ -2080,22 +2268,35 @@ class Context(object):
 
                         # Set the typed value of the node to the decoded value.
                         conv_val = codecs.decode(safe_str_convert(value).strip(), "hex")
-                        self.set(name, conv_val, no_conversion=True, do_with_prefix=do_with_prefix)
                     except Exception as e:
                         log.warning("hex conversion of '" + safe_str_convert(value) + \
                                     "' FROM hex failed. Converting TO hex. " + safe_str_convert(e))
                         conv_val = to_hex(safe_str_convert(value).strip())
-                        self.set(name, conv_val, no_conversion=True, do_with_prefix=do_with_prefix)
-                        
+
+                # Base64 conversion?
+                elif (val.lower() == "bin.base64"):
+                    conv_val = utils.b64_decode(value)
+
+                # Set the decoded value if we got one.
+                if (conv_val is not None):
+                    self.set(name, conv_val, no_conversion=True, do_with_prefix=do_with_prefix)
+
+                    # Save the decoded value in the decoded value field of the object.
+                    text_name = name[:name.rindex(".")] + decode_field
+                    self.set(text_name, conv_val, no_conversion=True, do_with_prefix=do_with_prefix)
+                    
             except KeyError:
                 if (log.getEffectiveLevel() == logging.DEBUG):
                     log.debug("Did not find type var " + node_type)
 
         # Handle after the fact data conversion with VBA objects.
-        if (name.endswith(".datatype")):
+        if (name.lower().endswith(".datatype")):
 
             # Handle doing conversions on the existing data.
-            node_value_name = name.replace(".datatype", ".nodetypedvalue")
+            if (name.endswith(".datatype")):
+                node_value_name = name.replace(".datatype", ".nodetypedvalue")
+            else:
+                node_value_name = name[:name.rindex(".")] + ".NodeTypedValue"
             try:
 
                 # Do we have data to convert from type "bin.hex"?
