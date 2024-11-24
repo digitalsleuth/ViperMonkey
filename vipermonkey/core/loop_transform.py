@@ -46,8 +46,8 @@ import re
 
 from pyparsing import ParseException
 
-from logger import log
-import statements
+from vipermonkey.core.logger import log
+from vipermonkey.core import statements
 
 def _transform_dummy_loop1(loop):
     """Transform useless loops like 'y = 20:Do While x < 100:If x = 6

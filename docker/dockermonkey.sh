@@ -5,6 +5,7 @@ if [[ $1 == "-h" || $# -eq 0 ]]; then
    echo "FILE is the VBA/VBScript file to analyze."
    echo "If JSON_FILE is given JSON analysis results will be saved in JSON_FILE."
    echo "If '-i ENTRY' is given emulation will start with VBA/VBScript function ENTRY."
+   echo "When vmonkey extracts artifact files, they are stored in a zip file <File>_artifacts.zip, with password 'infected'."
    echo ""
    echo "Give the --upgrade option to download the latest docker image."
    exit
@@ -28,27 +29,39 @@ if [ $? -ne 0 ]; then
 	exit
 fi
 
-if [[ $(docker ps -f status=running -f ancestor=haroldogden/vipermonkey -l | tail -n +2) ]]; then
+if [[ $(docker ps -f status=running -f ancestor=kirksayre/vipermonkey -l | tail -n +2) ]]; then
         echo "[+] Other ViperMonkey containers are running!"
 fi
 
 if [ $1 == "--upgrade" ]; then
     echo "[*] Pulling container..."
-    docker pull haroldogden/vipermonkey:latest
+    docker pull kirksayre/vipermonkey:latest
     echo "[+] Done. You now have the latest docker image."
     exit
 fi
 
 echo "[*] Checking for local ViperMonkey docker image..."
-docker image inspect haroldogden/vipermonkey:latest > /dev/null
+docker image inspect kirksayre/vipermonkey:latest > /dev/null
 if [ $? -ne 0 ]; then
     echo "[*] Pulling container..."
-    docker pull haroldogden/vipermonkey:latest
+    docker pull kirksayre/vipermonkey:latest
 fi
 echo "[*] Starting container..."
-docker_id=$(docker run --rm -d -t haroldogden/vipermonkey:latest)
+docker_id=$(docker run --rm -d -t kirksayre/vipermonkey:latest)
 
-    
+# Just getting version info?
+if [ $1 == "--version" ]; then
+    echo "[+] Docker Container:"
+    docker image inspect kirksayre/vipermonkey:latest
+    docker ps
+    echo $docker_id
+    echo "[+] ViperMonkey Git Hash:"
+    docker exec $docker_id sh -c "cd /opt/ViperMonkey/; git pull > /dev/null 2>&1; git rev-parse HEAD"
+    echo "[*] Done - Killing docker container $docker_id"
+    docker stop $docker_id > /dev/null
+    exit
+fi
+
 echo "[*] Attempting to copy file $1 into container ID $docker_id"
 
 file_basename=$(basename "$1")
@@ -62,6 +75,12 @@ docker exec $docker_id sh -c '/usr/lib/libreoffice/program/soffice.bin --headles
 
 echo "[*] Checking for ViperMonkey and dependency updates..."
 docker exec $docker_id sh -c "cd /opt;for d in *; do cd \$d; git pull > /dev/null 2>&1; cd /opt; done"
+
+echo "[*] Installing pyxlsb2..."
+docker exec $docker_id sh -c "cd /opt;git clone https://github.com/wmetcalf/pyxlsb2; cd /opt/pyxlsb2/; pypy3 setup.py install > /dev/null 2>&1; cd /opt"
+
+echo "[*] Installing exiftool..."
+docker exec $docker_id sh -c "apt-get install -y libimage-exiftool-perl > /dev/null 2>&1"
 
 echo "[*] Disabling network connection for container ID $docker_id"
 docker network disconnect bridge $docker_id
@@ -98,9 +117,9 @@ if [ "$json_file" != "" ]; then
 fi
 
 # Zip up dropped files if there are any.
-docker exec $docker_id sh -c "touch /root/test.zip ; [ -d \"/root/${file_basename}_artifacts/\" ] && zip -r --password=infected - /root/${file_basename}_artifacts/ > /root/test.zip"
+docker exec $docker_id sh -c "touch /root/test.zip ; [ -d \"/root/${file_basename}_artifacts/\" ] && zip -r --password=infected - \"/root/${file_basename}_artifacts/\" > /root/test.zip"
 docker cp "$docker_id:/root/test.zip" test.zip
-if [ ! -s test.zip ]; then rm test.zip; else mv test.zip ${file_basename}_artifacts.zip; echo "[*] Dropped files are in ${file_basename}_artifacts.zip"; fi
+if [ ! -s test.zip ]; then rm test.zip; else mv test.zip "${file_basename}_artifacts.zip"; echo "[*] Dropped files are in ${file_basename}_artifacts.zip"; fi
 
 echo "[*] Done - Killing docker container $docker_id"
 docker stop $docker_id > /dev/null

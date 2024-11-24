@@ -42,6 +42,7 @@ https://github.com/decalage2/ViperMonkey
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 import operator
+from functools import reduce
 
 __version__ = '0.03'
 
@@ -51,11 +52,11 @@ __version__ = '0.03'
 import logging
 from collections import Iterable
 
-from vba_object import eval_args, VBA_Object
-from python_jit import to_python
-from logger import log
-from utils import safe_str_convert
-import vba_conversion
+from vipermonkey.core.vba_object import eval_args, VBA_Object
+from vipermonkey.core.python_jit import to_python
+from vipermonkey.core.logger import log
+from vipermonkey.core.utils import safe_str_convert
+from vipermonkey.core import vba_conversion
 
 def debug_repr(op, args):
     """Represent an operator applied to a list of arguments as a string
@@ -89,6 +90,7 @@ class Sum(VBA_Object):
         super(Sum, self).__init__(original_str, location, tokens)
         # extract argument from the tokens:
         # expected to be a tuple containing a list [a,'&',b,'&',c,...]
+        self.gloss = None
         self.arg = tokens[0][::2]
 
     def eval(self, context, params=None):
@@ -137,7 +139,10 @@ class Sum(VBA_Object):
         return "(" + r + ")"
         
     def __repr__(self):
-        return debug_repr("+", self.arg)
+        if (self.gloss is not None):
+            return self.gloss
+        self.gloss = debug_repr("+", self.arg)
+        return self.gloss
         #return ' + '.join(map(repr, self.arg))
 
 # --- EQV --------------------------------------------------------
@@ -149,6 +154,7 @@ class Eqv(VBA_Object):
 
     def __init__(self, original_str, location, tokens):
         super(Eqv, self).__init__(original_str, location, tokens)
+        self.gloss = None
         self.arg = tokens[0][::2]
 
     def eval(self, context, params=None):
@@ -171,7 +177,10 @@ class Eqv(VBA_Object):
             raise e
 
     def __repr__(self):
-        return ' Eqv '.join(map(repr, self.arg))
+        if (self.gloss is not None):
+            return self.gloss
+        self.gloss = ' Eqv '.join(map(repr, self.arg))
+        return self.gloss
     
 # --- XOR --------------------------------------------------------
 
@@ -184,6 +193,7 @@ class Xor(VBA_Object):
         super(Xor, self).__init__(original_str, location, tokens)
         # extract argument from the tokens:
         # expected to be a tuple containing a list [a,'&',b,'&',c,...]
+        self.gloss = None
         self.arg = tokens[0][::2]
 
     def eval(self, context, params=None):
@@ -211,7 +221,10 @@ class Xor(VBA_Object):
             raise e
 
     def __repr__(self):
-        return ' ^ '.join(map(repr, self.arg))
+        if (self.gloss is not None):
+            return self.gloss
+        self.gloss = ' ^ '.join(map(repr, self.arg))
+        return self.gloss
 
     def to_python(self, context, params=None, indent=0):
         r = ""
@@ -232,6 +245,7 @@ class And(VBA_Object):
 
     def __init__(self, original_str, location, tokens):
         super(And, self).__init__(original_str, location, tokens)
+        self.gloss = None
         self.arg = tokens[0][::2]
 
     def to_python(self, context, params=None, indent=0):
@@ -269,7 +283,10 @@ class And(VBA_Object):
             raise e
 
     def __repr__(self):
-        return ' & '.join(map(repr, self.arg))
+        if (self.gloss is not None):
+            return self.gloss
+        self.gloss = ' & '.join(map(repr, self.arg))
+        return self.gloss
 
 # --- OR --------------------------------------------------------
 
@@ -280,6 +297,7 @@ class Or(VBA_Object):
 
     def __init__(self, original_str, location, tokens):
         super(Or, self).__init__(original_str, location, tokens)
+        self.gloss = None
         self.arg = tokens[0][::2]
 
     def eval(self, context, params=None):
@@ -317,7 +335,10 @@ class Or(VBA_Object):
         return "(" + r + ")"
         
     def __repr__(self):
-        return ' | '.join(map(repr, self.arg))
+        if (self.gloss is not None):
+            return self.gloss
+        self.gloss = ' | '.join(map(repr, self.arg))
+        return self.gloss
 
 # --- NOT --------------------------------------------------------
 
@@ -328,6 +349,7 @@ class Not(VBA_Object):
 
     def __init__(self, original_str, location, tokens):
         super(Not, self).__init__(original_str, location, tokens)
+        self.gloss = None
         self.arg = tokens[0][1]
         if (log.getEffectiveLevel() == logging.DEBUG):
             log.debug('parsed %r as binary Not' % self)
@@ -356,7 +378,10 @@ class Not(VBA_Object):
         return r
         
     def __repr__(self):
-        return "Not " + safe_str_convert(self.arg)
+        if (self.gloss is not None):
+            return self.gloss
+        self.gloss = "Not " + safe_str_convert(self.arg)
+        return self.gloss
 
 # --- Negation --------------------------------------------------------
 
@@ -367,6 +392,7 @@ class Neg(VBA_Object):
 
     def __init__(self, original_str, location, tokens):
         super(Neg, self).__init__(original_str, location, tokens)
+        self.gloss = None
         self.arg = tokens[0][1]
         if (log.getEffectiveLevel() == logging.DEBUG):
             log.debug('parsed %r as unary negation' % self)
@@ -397,7 +423,10 @@ class Neg(VBA_Object):
             return "NULL"
 
     def __repr__(self):
-        return "-" + safe_str_convert(self.arg)
+        if (self.gloss is not None):
+            return self.gloss
+        self.gloss = "-" + safe_str_convert(self.arg)
+        return self.gloss
     
 # --- SUBTRACTION: - OPERATOR ------------------------------------------------
 
@@ -410,6 +439,7 @@ class Subtraction(VBA_Object):
         super(Subtraction, self).__init__(original_str, location, tokens)
         # extract argument from the tokens:
         # expected to be a tuple containing a list [a,'&',b,'&',c,...]
+        self.gloss = None
         self.arg = tokens[0][::2]
 
     def eval(self, context, params=None):
@@ -451,7 +481,10 @@ class Subtraction(VBA_Object):
                 return reduce(lambda x, y: int(x) - int(y), l1)
 
     def __repr__(self):
-        return debug_repr("-", self.arg)
+        if (self.gloss is not None):
+            return self.gloss
+        self.gloss = debug_repr("-", self.arg)
+        return self.gloss
         #return ' - '.join(map(repr, self.arg))
 
 # --- MULTIPLICATION: * OPERATOR ------------------------------------------------
@@ -465,6 +498,7 @@ class Multiplication(VBA_Object):
         super(Multiplication, self).__init__(original_str, location, tokens)
         # extract argument from the tokens:
         # expected to be a tuple containing a list [a,'&',b,'&',c,...]
+        self.gloss = None
         self.arg = tokens[0][::2]
 
     def eval(self, context, params=None):
@@ -489,7 +523,10 @@ class Multiplication(VBA_Object):
                 return 0
 
     def __repr__(self):
-        return debug_repr("*", self.arg)
+        if (self.gloss is not None):
+            return self.gloss
+        self.gloss = debug_repr("*", self.arg)
+        return self.gloss
         #return ' * '.join(map(repr, self.arg))
 
 # --- EXPONENTIATION: ^ OPERATOR ------------------------------------------------
@@ -503,6 +540,7 @@ class Power(VBA_Object):
         super(Power, self).__init__(original_str, location, tokens)
         # extract argument from the tokens:
         # expected to be a tuple containing a list [a,'&',b,'&',c,...]
+        self.gloss = None
         self.arg = tokens[0][::2]
 
     def eval(self, context, params=None):
@@ -527,7 +565,10 @@ class Power(VBA_Object):
                 return 0
 
     def __repr__(self):
-        return debug_repr("^", self.arg)
+        if (self.gloss is not None):
+            return self.gloss
+        self.gloss = debug_repr("^", self.arg)
+        return self.gloss
         #return ' ^ '.join(map(repr, self.arg))
 
     def to_python(self, context, params=None, indent=0):
@@ -545,6 +586,7 @@ class Division(VBA_Object):
         super(Division, self).__init__(original_str, location, tokens)
         # extract argument from the tokens:
         # expected to be a tuple containing a list [a,'&',b,'&',c,...]
+        self.gloss = None
         self.arg = tokens[0][::2]
 
     def eval(self, context, params=None):
@@ -574,7 +616,10 @@ class Division(VBA_Object):
             return 'NULL'
 
     def __repr__(self):
-        return debug_repr("/", self.arg)
+        if (self.gloss is not None):
+            return self.gloss
+        self.gloss = debug_repr("/", self.arg)
+        return self.gloss
         #return ' / '.join(map(repr, self.arg))
 
 
@@ -589,6 +634,7 @@ class MultiOp(VBA_Object):
         super(MultiOp, self).__init__(original_str, location, tokens)
         # extract argument from the tokens:
         # expected to be a tuple containing a list (e.g. [a,'*',b,'/',c,...])
+        self.gloss = None
         self.arg = tokens[0][::2]  # Keep as helper  (kept singular to keep backwards compatibility)
         self.operators = tokens[0][1::2]
 
@@ -653,7 +699,7 @@ class MultiOp(VBA_Object):
             # Try converting strings to numbers.
             # TODO: Need to handle floats in strings.
             try:
-                args = map(vba_conversion.coerce_to_num, evaluated_args)
+                args = list(map(vba_conversion.coerce_to_num, evaluated_args))
                 ret = args[0]
                 for op, arg in zip(self.operators, args[1:]):
                     ret = self.operator_map[op](ret, arg)
@@ -677,10 +723,13 @@ class MultiOp(VBA_Object):
             return 'NULL'
 
     def __repr__(self):
+        if (self.gloss is not None):
+            return self.gloss
         ret = [safe_str_convert(self.arg[0])]
         for op, arg in zip(self.operators, self.arg[1:]):
             ret.append(' {} {!s}'.format(op, arg))
-        return '({})'.format(''.join(ret))
+        self.gloss = '({})'.format(''.join(ret))
+        return self.gloss
 
 
 class MultiDiv(MultiOp):
@@ -709,6 +758,7 @@ class FloorDivision(VBA_Object):
         super(FloorDivision, self).__init__(original_str, location, tokens)
         # extract argument from the tokens:
         # expected to be a tuple containing a list [a,'&',b,'&',c,...]
+        self.gloss = None
         self.arg = tokens[0][::2]
 
     def eval(self, context, params=None):
@@ -737,7 +787,10 @@ class FloorDivision(VBA_Object):
             context.set_error(safe_str_convert(e))
             
     def __repr__(self):
-        return debug_repr("//", self.arg)
+        if (self.gloss is not None):
+            return self.gloss
+        self.gloss = debug_repr("//", self.arg)
+        return self.gloss
         #return ' \\ '.join(map(repr, self.arg))
 
     def to_python(self, context, params=None, indent=0):
@@ -761,6 +814,7 @@ class Concatenation(VBA_Object):
         super(Concatenation, self).__init__(original_str, location, tokens)
         # extract argument from the tokens:
         # expected to be a tuple containing a list [a,'&',b,'&',c,...]
+        self.gloss = None
         self.arg = tokens[0][::2]
         if (log.getEffectiveLevel() == logging.DEBUG):
             log.debug('Concatenation: self.arg=%s' % repr(self.arg))
@@ -788,7 +842,10 @@ class Concatenation(VBA_Object):
             return ''
 
     def __repr__(self):
-        return debug_repr("&", self.arg)
+        if (self.gloss is not None):
+            return self.gloss
+        self.gloss = debug_repr("&", self.arg)
+        return self.gloss
         #return ' & '.join(map(repr, self.arg))
 
     def to_python(self, context, params=None, indent=0):
@@ -812,6 +869,7 @@ class Mod(VBA_Object):
         super(Mod, self).__init__(original_str, location, tokens)
         # extract argument from the tokens:
         # expected to be a tuple containing a list [a,'mod',b,'mod',c,...]
+        self.gloss = None
         self.arg = tokens[0][::2]
 
     def eval(self, context, params=None):
@@ -835,7 +893,10 @@ class Mod(VBA_Object):
             return ''
 
     def __repr__(self):
-        return debug_repr("mod", self.arg)
+        if (self.gloss is not None):
+            return self.gloss
+        self.gloss = debug_repr("mod", self.arg)
+        return self.gloss
         #return ' mod '.join(map(repr, self.arg))
 
     def to_python(self, context, params=None, indent=0):

@@ -56,22 +56,22 @@ pyparsing.ParserElement.setDefaultWhitespaceChars(' \t\x19')
 from pyparsing import Optional, ZeroOrMore, Forward, Suppress, \
     OneOrMore
 
-from comments_eol import rem_statement, EOL, EOS
-from procedures import function_end, function_start, sub_end, sub_start_line, \
+from vipermonkey.core.comments_eol import rem_statement, EOL, EOS
+from vipermonkey.core.procedures import function_end, function_start, sub_end, sub_start_line, \
     function, sub, Function, Sub, property_let, PropertyLet, property_get, \
     PropertyGet
-from statements import simple_statements_line, for_end, for_start, \
+from vipermonkey.core.statements import simple_statements_line, for_end, for_start, \
     type_declaration, simple_if_statement_macro, option_statement, \
     External_Function, do_const_assignments, external_function, attribute_statement, \
     Dim_Statement, Global_Var_Statement, Attribute_Statement, If_Statement_Macro, \
     simple_call_list, dim_statement, global_variable_declaration, \
     tagged_block, block_statement, orphaned_marker
-from function_defn_visitor import function_defn_visitor
-from vba_object import VBA_Object
-from python_jit import to_python
-from logger import log
-from expressions import expression, expr_const
-from utils import safe_str_convert
+from vipermonkey.core.function_defn_visitor import function_defn_visitor
+from vipermonkey.core.vba_object import VBA_Object
+from vipermonkey.core.python_jit import to_python
+from vipermonkey.core.logger import log
+from vipermonkey.core.expressions import expression, expr_const
+from vipermonkey.core.utils import safe_str_convert
 
 # === VBA MODULE AND STATEMENTS ==============================================
 
@@ -121,6 +121,7 @@ class Module(VBA_Object):
 
         super(Module, self).__init__(original_str, location, tokens)
 
+        self.gloss = None
         self.name = None
         self.code = None  # set by ViperMonkey after parsing
         self.attributes = {}
@@ -139,7 +140,7 @@ class Module(VBA_Object):
         for token in tokens:
 
             if isinstance(token, If_Statement_Macro):
-                for n in token.external_functions.keys():
+                for n in list(token.external_functions.keys()):
                     if (log.getEffectiveLevel() == logging.DEBUG):
                         log.debug("saving external func decl: %r" % n)
                     self.external_functions[n] = token.external_functions[n]
@@ -182,16 +183,19 @@ class Module(VBA_Object):
         self.name = self.attributes.get('VB_Name', None)
 
     def __repr__(self):
+        if (self.gloss is not None):
+            return self.gloss
         r = 'Module %r\n' % self.name
-        for sub_ in self.subs.values():
+        for sub_ in list(self.subs.values()):
             r += '  %r\n' % sub_
-        for func in self.functions.values():
+        for func in list(self.functions.values()):
             r += '  %r\n' % func
-        for extfunc in self.external_functions.values():
+        for extfunc in list(self.external_functions.values()):
             r += '  %r\n' % extfunc
-        for prop in self.props.values():
+        for prop in list(self.props.values()):
             r += '  %r\n' % prop
-        return r
+        self.gloss = r
+        return self.gloss
 
     def eval(self, context, params=None):
 
@@ -235,26 +239,26 @@ class Module(VBA_Object):
 
         """
         
-        for name, _sub in self.subs.items():
+        for name, _sub in list(self.subs.items()):
             if (log.getEffectiveLevel() == logging.DEBUG):
                 log.debug('(1) storing sub "%s" in globals' % name)
             context.set(name, _sub)
             context.set(name, _sub, force_global=True)
-        for name, _function in self.functions.items():
+        for name, _function in list(self.functions.items()):
             if (log.getEffectiveLevel() == logging.DEBUG):
                 log.debug('(1) storing function "%s" in globals' % name)
             context.set(name, _function)
             context.set(name, _function, force_global=True)
-        for name, _prop in self.props.items():
+        for name, _prop in list(self.props.items()):
             if (log.getEffectiveLevel() == logging.DEBUG):
                 log.debug('(1) storing property let "%s" in globals' % name)
             context.set(name, _prop)
             context.set(name, _prop, force_global=True)
-        for name, _function in self.external_functions.items():
+        for name, _function in list(self.external_functions.items()):
             if (log.getEffectiveLevel() == logging.DEBUG):
                 log.debug('(1) storing external function "%s" in globals' % name)
             context.set(name, _function)
-        for name, _var in self.global_vars.items():
+        for name, _var in list(self.global_vars.items()):
             if (log.getEffectiveLevel() == logging.DEBUG):
                 log.debug('(1) storing global var "%s" = %s in globals (1)' % (name, safe_str_convert(_var)))
             if (isinstance(name, str)):
@@ -316,15 +320,19 @@ class LooseLines(VBA_Object):
 
     def __init__(self, original_str, location, tokens):
         super(LooseLines, self).__init__(original_str, location, tokens)
+        self.gloss = None
         self.block = tokens.block
         log.info('parsed %r' % self)
 
     def __repr__(self):
+        if (self.gloss is not None):
+            return self.gloss
         s = repr(self.block)
         if (len(s) > 35):
-            s = s[:35] + " ...)"
-        return 'Loose Lines Block: %s: %s statement(s)' % (s, len(self.block))
-
+            s = s[:35] + " ...)"            
+        self.gloss = 'Loose Lines Block: %s: %s statement(s)' % (s, len(self.block))
+        return self.gloss
+        
     def to_python(self, context, params=None, indent=0):
         return to_python(self.block, context, indent=indent, statements=True)
     

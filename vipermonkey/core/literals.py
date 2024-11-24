@@ -56,9 +56,9 @@ pyparsing.ParserElement.setDefaultWhitespaceChars(' \t\x19')
 
 from pyparsing import QuotedString, Regex
 
-from logger import log
-from vba_object import VBA_Object
-from utils import safe_str_convert
+from vipermonkey.core.logger import log
+from vipermonkey.core.vba_object import VBA_Object
+from vipermonkey.core.utils import safe_str_convert
 
 # --- BOOLEAN ------------------------------------------------------------
 
@@ -124,12 +124,22 @@ class String(VBA_Object):
     
     def __init__(self, original_str, location, tokens):
         super(String, self).__init__(original_str, location, tokens)
-        self.value = tokens[0]        
+        self.gloss = None
+        try:
+            self.value = tokens[0].encode("utf-8").decode("latin-1")
+        except:
+            tmp_s = ""
+            for b in tokens[0].encode("utf-8"):
+                tmp_s += chr(b)
+            self.value = tmp_s
         if (log.getEffectiveLevel() == logging.DEBUG):
             log.debug('parsed "%r" as String' % self)
 
     def __repr__(self):
-        return '"' + safe_str_convert(self.value) + '"'
+        if (self.gloss is not None):
+            return self.gloss
+        self.gloss = '"' + safe_str_convert(self.value) + '"'
+        return self.gloss
 
     def eval(self, context, params=None):
         r = self.value

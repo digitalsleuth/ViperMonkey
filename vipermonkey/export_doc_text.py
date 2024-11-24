@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+##!/usr/bin/env -S python3 -E
 
 """@package vipermonkey.export_doc_text Export the document
 text/tables of a Word document via unotools.  This is Python 3.
@@ -86,11 +87,11 @@ def get_office_proc():
 
     for proc in psutil.process_iter():
         try:
-            pinfo = proc.as_dict(attrs=['pid', 'name', 'username'])
+            pinfo = proc.as_dict(attrs=['pid', 'name', 'username', 'status'])
         except psutil.NoSuchProcess:
             pass
         else:
-            if (pinfo["name"].startswith("soffice")):
+            if ((pinfo["name"].startswith("soffice")) and (pinfo["status"] != "zombie")):
                 return pinfo
     return None
 
@@ -140,6 +141,27 @@ def get_document(fname, connection):
     return document
 
 ###################################################################################################
+def save_document_as_text(document):
+    """Save a document as text.
+
+    @param document (Writer) UNO object representing the loaded Word
+    document.
+
+    @retval (str) The temp file containing the document text.
+    """
+
+    import tempfile
+    from com.sun.star.beans import PropertyValue
+    tmpname = tempfile.gettempdir() + os.path.sep + next(tempfile._get_candidate_names())
+    url = convert_path_to_url(tmpname)
+    p = PropertyValue(Name = 'FilterName', Value = 'Text')
+    if hasattr(document, "storeAsURL"):
+        document.storeAsURL(url, [p])
+    else:
+        document.store_to_url(url, [p])
+    return tmpname
+
+###################################################################################################
 def get_text(document):
     """Get the document text of a given Word file.
 
@@ -151,7 +173,17 @@ def get_text(document):
     """
 
     # Get the text. Add a character at the start to simulate an embedded image at start.
-    return "\x0c" + str(document.getText().getString())
+    text_file = save_document_as_text(document)
+    txt = ""
+    try:
+        f = open(text_file, "r")
+        txt = f.read()
+        f.close()
+        os.remove(text_file)
+    except IOError:
+        pass
+    #return "\x0c" + str(document.getText().getString())
+    return "\x0c" + txt
 
 ###################################################################################################
 def get_tables(document):
@@ -207,9 +239,9 @@ if __name__ == '__main__':
     document = get_document(args.file, connection)
 
     if args.text:
-        print(get_text(document))
+        print((get_text(document)))
     elif args.tables:
-        print(json.dumps(get_tables(document)))
+        print((json.dumps(get_tables(document))))
 
     # clean up
     document.close(True)

@@ -44,22 +44,23 @@ https://github.com/decalage2/ViperMonkey
 __version__ = '0.03'
 
 #import traceback
-#import sys
-from logger import log
+import sys
+from vipermonkey.core.logger import log
 import logging
 import json
 import os
-import filetype
+from vipermonkey.core import filetype
 import random
 import re
 import subprocess
+from functools import reduce
 try:
     import xlrd2 as xlrd
 except ImportError:
     log.warning("xlrd2 Python package not installed. Falling back to xlrd.")
     import xlrd
-
-from utils import safe_str_convert
+    
+from vipermonkey.core.utils import safe_str_convert
     
 _thismodule_dir = os.path.normpath(os.path.abspath(os.path.dirname(__file__)))
     
@@ -72,12 +73,42 @@ def excel_col_letter_to_index(x):
 
     @param x (str) The Excel alphabetic column.
     
-    @return (int) The column as a nueric index.
+    @return (int) The column as a numeric index.
 
     """
     x = x.upper()
     return (reduce(lambda s,a:s*26+ord(a)-ord('A')+1, x, 0) - 1)
 
+def excel_convert_letter_index(cell_index):
+    """Convert an excel cell index like "CF161" to a (row, column)
+    integer tuple.
+
+    @param cell_index (str) The cell index.
+
+    @return (tuple) A 2 element tuple of the form (row, column) (both
+    integers).
+
+    """
+
+    # Pull out the cell index.
+    cell_index = safe_str_convert(cell_index).replace('"', "").replace("'", "")
+
+    # Pull out the cell column and row.
+    col = ""
+    row = ""
+    for c in cell_index:
+        if (c.isalpha()):
+            col += c
+        else:
+            row += c
+                    
+    # Convert the row and column to numeric indices.
+    row = int(row) - 1
+    col = excel_col_letter_to_index(col)
+
+    # Done.
+    return (row, col)
+    
 def _read_sheet_from_csv(filename):
     """Read in an Excel sheet from a CSV file.
 
@@ -91,14 +122,14 @@ def _read_sheet_from_csv(filename):
     # Open the CSV file.
     f = None
     try:
-        f = open(filename, 'r')
+        f = open(filename, 'rb')
     except Exception as e:
         log.error("Cannot open CSV file. " + safe_str_convert(e))
         return None
 
     # Read in the full CSV file contents and escape ',' in cell values
     # so the cell split works correctly. Also escape \n's in cell contents.
-    data = f.read()
+    data = safe_str_convert(f.read())
     f.close()
     in_str = False
     tmp = ""
@@ -223,6 +254,7 @@ def load_excel_libreoffice(data):
     """
     
     # Don't try this if it is not an Office file.
+    log.info("Trying to load Excel with LibreOffice...")
     if (not filetype.is_office_file(data, True)):
         log.warning("The file is not an Office file. Not extracting sheets with LibreOffice.")
         return None
@@ -236,7 +268,8 @@ def load_excel_libreoffice(data):
     # Dump all the sheets as CSV files using soffice.
     output = None
     try:
-        output = subprocess.check_output(["timeout", "30", "python3", _thismodule_dir + "/../export_all_excel_sheets.py", out_dir])
+        output = subprocess.check_output(["timeout", "30", "python3", "-E", _thismodule_dir + "/../export_all_excel_sheets.py", out_dir])
+        output = safe_str_convert(output)
     except Exception as e:
         log.error("Running export_all_excel_sheets.py failed. " + safe_str_convert(e))
         os.remove(out_dir)
@@ -247,8 +280,7 @@ def load_excel_libreoffice(data):
     try:
         sheet_files = json.loads(output.replace("'", '"'))
     except Exception as e:
-        if (log.getEffectiveLevel() == logging.DEBUG):
-            log.debug("Loading sheet file names failed. " + safe_str_convert(e))
+        log.error("Loading sheet file names failed. " + safe_str_convert(e))
         os.remove(out_dir)
         return None
 
@@ -321,20 +353,104 @@ def load_excel_xlrd(data):
     """
     
     # Only use this on Office 97 Excel files.
+    log.info("Trying to load Excel with xlrd2...")
     if (not filetype.is_office97_file(data, True)):
         log.warning("File is not an Excel 97 file. Not reading with xlrd2.")
         return None
 
     # It is Office 97. See if we can read it with xlrd2.
     try:
-        if (log.getEffectiveLevel() == logging.DEBUG):
-            log.debug("Trying to load with xlrd...")
         r = xlrd.open_workbook(file_contents=data)
         return r
     except Exception as e:
-        log.error("Reading in file as Excel with xlrd failed. " + safe_str_convert(e))
+        log.warning("Reading in file as Excel with xlrd failed. " + safe_str_convert(e))
         return None
 
+def load_excel_pyxlsb2(data):
+    """Read in an Excel file into an ExcelBook object with the pyxlsb2
+    Excel library.
+
+    @param data (str) The Excel file contents.
+
+    @return (core.excel.ExceBook object) On success return the Excel
+    spreadsheet as an ExcelBook object. Returns None on error.
+
+    """
+    
+    # Only use this on Office 2007+ Excel files.
+    log.info("Trying to load Excel with pyxlsb2...")
+    if (not filetype.is_office2007_file(data, True)):
+        log.warning("File is not an Excel 2007+ file. Not reading with pyxlsb2.")
+        return None
+
+    # Make sure pyxlsb2 is installed.
+    try:
+        from pyxlsb2 import open_workbook
+    except ModuleNotFoundError:
+        log.error("pyxlsb2 is not installed. Not loading Excel with pyxlsb2.")
+        return None
+    
+    # Save the Excel data to a temporary file.
+    out_dir = "/tmp/tmp_excel_file_" + safe_str_convert(random.randrange(0, 10000000000))
+    f = open(out_dir, 'wb')
+    f.write(data)
+    f.close()
+    
+    # Try to read with pyxlsb2.
+    vmbook = None
+    try:
+        # Open the Excel workbook.
+        with open_workbook(out_dir) as wb:
+
+            # Cycle through all the sheets.
+            vm_book = ExcelBook()
+            num_sheets = 0
+            num_cells = 0
+            for name1 in wb.sheets:
+
+                # Get the sheet name.
+                num_sheets += 1
+                name = name1.name
+                
+                # Temporary map of (row, col) to cell values.
+                cell_map = {}
+
+                # Now get the actual sheet object.
+                with wb.get_sheet_by_name(name) as sheet:
+
+                    # Cycle through the rows.
+                    curr_row = -1
+                    for row in sheet.rows():
+                        curr_row += 1
+
+                        # Cycle through the columns.
+                        curr_col = -1
+                        for c in row:
+                            curr_col += 1
+                            num_cells += 1
+                            cell_map[(curr_row, curr_col)] = c.v
+
+                    # Make an ExcelSheet object for the cells.
+                    vm_sheet = ExcelSheet(cell_map, name)
+
+                    # Add the sheet to the workbook.
+                    vm_book.sheets.append(vm_sheet)
+                            
+    except (AttributeError, IndexError) as e:
+        # Delete the temporary Excel file.
+        if os.path.isfile(out_dir):
+            os.remove(out_dir)
+        log.warning("Loading Excel with pyxlsb2 failed. " + safe_str_convert(e))
+        return None
+
+    # Delete the temporary Excel file.
+    if os.path.isfile(out_dir):
+        os.remove(out_dir)
+
+    # Done.
+    log.info("Loaded " + str(num_sheets) + " Excel sheets containing " + str(num_cells) + " cells with pyxlsb2.")
+    return vm_book
+        
 def load_excel(data):
     """Load the cells from a given Excel spreadsheet. This first tries
     getting the sheet contents with LibreOffice if it is installed,
@@ -348,15 +464,32 @@ def load_excel(data):
 
     """
 
-    # Load the sheet with Libreoffice.
-    wb = load_excel_libreoffice(data)
+    # Try loading the sheets with pyxlsb2.
+    wb = load_excel_pyxlsb2(data)
+    if (wb is not None):
+        return wb
+    
+    # Try loading the sheets with Libreoffice.
+    wb = load_excel_libreoffice(data)    
     if (wb is not None):
 
         # Did we load sheets with libreoffice?
         if (len(wb.sheet_names()) > 0):
-            return wb
 
-    # Next try loading the sheets with xlrd2.
+            # Do the sheets contain any cell values?
+            got_cell = False
+            for cell in wb.get_all_cells():
+                val = safe_str_convert(cell["value"]).strip()
+                if (len(val) > 0):
+                    got_cell = True
+                    break
+
+            # Only return the LibreOffice Excel workbook if we have at least
+            # 1 cell with a value.
+            if got_cell:
+                return wb
+
+    # Try loading the sheets with xlrd2.
     wb = load_excel_xlrd(data)
     if (wb is not None):
         return wb
@@ -412,6 +545,10 @@ def get_largest_sheet(workbook):
 
     """
 
+    # Sanity check.
+    if (workbook is None):
+        return None
+    
     # Have we already computed this?
     if (hasattr(workbook, "__largest_sheet__")):
         return workbook.__largest_sheet__
@@ -558,7 +695,7 @@ def _pull_cells_sheet_internal(sheet, strip_empty):
     # Find the max row and column for the cells.
     max_row = -1
     max_col = -1
-    for cell_index in sheet.cells.keys():
+    for cell_index in list(sheet.cells.keys()):
         curr_row = cell_index[0]
         curr_col = cell_index[1]
         if (curr_row > max_row):
@@ -672,7 +809,7 @@ class ExcelSheet(object):
         r = ""
         if debug:
             r += "Sheet: '" + self.name + "'\n\n"
-            for cell in self.cells.keys():
+            for cell in list(self.cells.keys()):
                 r += safe_str_convert(cell) + "\t=\t'" + safe_str_convert(self.cells[cell]) + "'\n"
         else:
             r += "Sheet: '" + self.name + "'\n"
@@ -689,7 +826,7 @@ class ExcelSheet(object):
         if (self.__num_rows is not None):
             return self.__num_rows
         max_row = -1
-        for cell in self.cells.keys():
+        for cell in list(self.cells.keys()):
             curr_row = cell[0]
             if (curr_row > max_row):
                 max_row = curr_row
@@ -705,7 +842,7 @@ class ExcelSheet(object):
         if (self.__num_cols is not None):
             return self.__num_cols
         max_col = -1
-        for cell in self.cells.keys():
+        for cell in list(self.cells.keys()):
             curr_col = cell[1]
             if (curr_col > max_col):
                 max_col = curr_col

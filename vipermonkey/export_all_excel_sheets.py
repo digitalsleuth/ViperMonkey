@@ -17,6 +17,7 @@ import string
 
 # sudo pip3 install unotools
 # sudo apt install libreoffice-calc, python3-uno
+# NOTE: unotools does not work in pypy3, so python3 needed to run this.
 from unotools import Socket, connect
 from unotools.component.calc import Calc
 from unotools.unohelper import convert_path_to_url
@@ -42,12 +43,12 @@ def strip_unprintable(the_str):
     # Grr. Python2 unprintable stripping.
     r = the_str
     if ((isinstance(r, str)) or (not isinstance(r, bytes))):
-        r = ''.join(filter(lambda x:x in string.printable, r))
+        r = ''.join([x for x in r if x in string.printable])
         
     # Grr. Python3 unprintable stripping.
     else:
         tmp_r = ""
-        for char_code in filter(lambda x:chr(x) in string.printable, r):
+        for char_code in [x for x in r if chr(x) in string.printable]:
             tmp_r += chr(char_code)
         r = tmp_r
 
@@ -242,7 +243,7 @@ def convert_csv(fname):
     # Bomb out if this is not an Excel file.
     if (not hasattr(component, "getSheets")):
         return r
-    
+
     # Iterate on all the sheets in the spreadsheet.
     sheets = component.getSheets()
     enumeration = sheets.createEnumeration()

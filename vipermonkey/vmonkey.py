@@ -1,4 +1,4 @@
-#!/usr/bin/env pypy
+#!/usr/bin/env python3
 
 """@package vipermonkey.vmonkey
 
@@ -14,8 +14,6 @@ License: BSD, see source code or documentation
 Project Repository:
 https://github.com/decalage2/ViperMonkey
 """
-
-from __future__ import print_function
 
 # pylint: disable=pointless-string-statement
 """@mainpage
@@ -93,7 +91,7 @@ from oletools.thirdparty.xglob import xglob
 from oletools.olevba import VBA_Parser, filter_vba, FileOpenError
 import olefile
     
-from core.meta import get_metadata_exif
+from vipermonkey.core.meta import get_metadata_exif
 
 # add the vipermonkey folder to sys.path (absolute+normalized path):
 _thismodule_dir = os.path.normpath(os.path.abspath(os.path.dirname(__file__)))
@@ -101,15 +99,15 @@ if _thismodule_dir not in sys.path:
     sys.path.insert(0, _thismodule_dir)
 
 # relative import of core ViperMonkey modules:
-import core
-import core.excel as excel
-import core.read_ole_fields as read_ole_fields
-from core.utils import safe_print
-from core.utils import safe_str_convert
+import vipermonkey.core
+import vipermonkey.core.excel as excel
+import vipermonkey.core.read_ole_fields as read_ole_fields
+from vipermonkey.core.utils import safe_print
+from vipermonkey.core.utils import safe_str_convert
 
 # for logging
-from core.logger import log
-from core.logger import CappedFileHandler
+from vipermonkey.core.logger import log
+from vipermonkey.core.logger import CappedFileHandler
 from logging import FileHandler
 
 #=== LICENSE ==================================================================
@@ -148,7 +146,7 @@ from logging import FileHandler
 # 2018-08-17 v0.07 KS: - lots of bug fixes and additions by Kirk Sayre (PR #34)
 #                  PL: - added ASCII art banner
 
-__version__ = '1.0.2'
+__version__ = '2.0.0'
 
 #------------------------------------------------------------------------------
 # TODO:
@@ -178,7 +176,14 @@ __version__ = '1.0.2'
 #   https://msdn.microsoft.com/en-us/library/dd361851.aspx
 # - [MS-OVBA]: Microsoft Office VBA File Format Structure
 #   http://msdn.microsoft.com/en-us/library/office/cc313094%28v=office.12%29.aspx
-    
+
+## Globals
+
+# Track whether there was a parse error.
+got_parse_error = False
+# Track whether emulation crashed with an exception.
+got_crash_error = False
+
 def get_vb_contents_from_hta(vba_code):
     """Pull out Visual Basic code from .hta file contents.
 
@@ -193,6 +198,7 @@ def get_vb_contents_from_hta(vba_code):
 
     # Fix some obfuscation if needed.
     # '&#86;'
+    vba_code = safe_str_convert(vba_code)
     if (re.search(r"&#\d{1,3};", vba_code) is not None):
         for i in range(0, 256):
             curr_c = chr(i)
@@ -211,9 +217,8 @@ def get_vb_contents_from_hta(vba_code):
         r"<[Ss][Cc][Rr][Ii][Pp][Tt] +[Tt][Yy][Pp][Ee] *= *" + \
         r"[\"'](?:[Tt][Ee][Xx][Tt]/)?(?:(?:[Vv][Bb])|(?:[Jj][Aa]?[Vv]?[Aa]?))[Ss][Cc][Rr][Ii][Pp][Tt][\"']" + \
         r"(?: +[Ll][Aa][Nn][Gg][Uu][Aa][Gg][Ee] *= *[\"'][Vv][Bb][Ss][Cc][Rr][Ii][Pp][Tt][\"'])?[^>]*>" + \
-        r"(.{20,}?)(?:(?:</\s*[Ss][Cc][Rr][Ii][Pp][Tt][^>]*>)|$)"
+        r"(.{20,}?)</\s*[Ss][Cc][Rr][Ii][Pp][Tt][^>]*>"
     ]
-    
     code = []
     for pat in hta_regexes:
         code = re.findall(pat, vba_code.strip(), re.DOTALL)
@@ -223,7 +228,7 @@ def get_vb_contents_from_hta(vba_code):
             #    print(c)
             break
     if (len(code) == 0):
-        return vba_code        
+        return vba_code
 
     # We have script block VB code.    
     
@@ -303,7 +308,7 @@ def parse_stream(subfilename,
     if (read_ole_fields.is_garbage_vba(vba_code, no_html=True)):
         log.warning("Failed to extract VBScript from HTA. Skipping.")
         return "empty"
-        
+
     # Skip some XML that olevba gives for some 2007+ streams.
     if (vba_code.strip().startswith("<?xml")):
         log.warning("Skipping XML stream.")
@@ -338,11 +343,17 @@ def parse_stream(subfilename,
             safe_print(" "*(err.column-1) + "^")
             safe_print(err)
             log.error("Parse Error. Processing Aborted.")
+            global got_parse_error
+            got_parse_error = True
             return None
 
     # Check for timeouts.
     core.vba_object.limits_exceeded(throw_error=True)
-        
+
+    # Differentiate between no macros and macros that failed to parse.
+    if (m is None):
+        m = "empty"
+    
     # Return the parsed macro.
     return m
 
@@ -395,12 +406,29 @@ def parse_streams(vba, strip_useless=False):
     
     # Parse the VBA streams.
     r = []
+    got_vba = False
     for (subfilename, stream_path, vba_filename, vba_code) in vba.extract_macros():
+        got_vba = True
         m = parse_stream(subfilename, stream_path, vba_filename, vba_code, strip_useless, local_funcs)
         if (m is None):
+            got_vba = False
+            r = []
+            break
+        if (m == "empty"):
             continue
-        r.append((m, stream_path))
-    if (len(r) == 0): return None
+        r.append((m, stream_path))    
+
+    # Did we parse any VBA?
+    if (len(r) == 0):
+
+        # No VBA macros?
+        if (not got_vba):
+            return "empty"
+
+        # Got VBA, but cannot parse.
+        return None
+
+    # Got parsed VBA.
     return r
 
 # === Top level utility functions ================================================================================
@@ -592,6 +620,7 @@ def _remove_duplicate_iocs(iocs):
     for ioc1 in iocs:
 
         # Does this IOC look like straight up garbage?
+        ioc1 = safe_str_convert(ioc1)
         if (read_ole_fields.is_garbage_vba(ioc1, test_all=True, bad_pct=.25)):
             skip.add(ioc1)
             continue
@@ -599,6 +628,7 @@ def _remove_duplicate_iocs(iocs):
         # Looks somewhat sensible. See if it is a duplicate.
         keep_curr = True
         for ioc2 in iocs:
+            ioc2 = safe_str_convert(ioc2)
             if (ioc2 in skip):
                 continue
             if ((ioc1 != ioc2) and (ioc1 in ioc2)):
@@ -624,6 +654,10 @@ def _get_vba_parser(data):
     object for the given file contents. On error, None.
 
     """
+
+    # Reset the parse error flag.
+    global got_parse_error
+    got_parse_error = False
     
     # First just try the most common case where olevba can directly get the VBA.
     vba = None
@@ -635,8 +669,8 @@ def _get_vba_parser(data):
             log.debug("Creating VBA_PArser() Failed. Trying as HTA. " + safe_str_convert(e))
         
         # If that did not work see if we can pull HTA wrapped VB from the data.
-        extracted_data = get_vb_contents_from_hta(data)
-
+        extracted_data = bytes(get_vb_contents_from_hta(data), "latin-1")
+        
         # If this throws an exception it will get passed up.
         vba = VBA_Parser('', extracted_data, relaxed=True)
 
@@ -669,7 +703,7 @@ def pull_embedded_pe_files(data, out_dir):
         return
     
     # Is a PE file in the data at all?
-    pe_pat = r"MZ.{70,80}This program (?:(?:cannot be run in DOS mode\.)|(?:must be run under Win32))"
+    pe_pat = br"MZ.{70,80}This program (?:(?:cannot be run in DOS mode\.)|(?:must be run under Win32))"
     if (re.search(pe_pat, data) is None):
         return
 
@@ -741,12 +775,12 @@ def _report_analysis_results(vm, data, display_int_iocs, orig_filename, out_file
     for ioc in tmp_b64_iocs:
         full_iocs.add(ioc)
         core.vba_context.num_b64_iocs += 1
-    
-    
+
     # Print table of all recorded actions
-    safe_print('\nRecorded Actions:')
-    safe_print(vm.dump_actions())
-    safe_print('')
+    if (len(vm.actions) > 0):
+        safe_print('\nRecorded Actions:')
+        safe_print(vm.dump_actions())
+        safe_print('')
 
     # Report intermediate IOCs.
     tmp_iocs = []
@@ -773,8 +807,9 @@ def _report_analysis_results(vm, data, display_int_iocs, orig_filename, out_file
     pull_embedded_pe_files(data, core.vba_context.out_dir)
 
     # Report VBA builtin fingerprint.
-    safe_print('VBA Builtins Called: ' + safe_str_convert(vm.external_funcs))
-    safe_print('')
+    if (len(vm.external_funcs) > 0):
+        safe_print('VBA Builtins Called: ' + safe_str_convert(vm.external_funcs))
+        safe_print('')
 
     # Report decoded strings.
     if (len(vm.decoded_strs) > 0):
@@ -799,6 +834,8 @@ def _report_analysis_results(vm, data, display_int_iocs, orig_filename, out_file
             })
 
         out_data = {
+            "parse_error": got_parse_error,
+            "crash_error": got_crash_error,
             "file_name": orig_filename,
             "potential_iocs": list(tmp_iocs),
             "shellcode" : shellcode_bytes,
@@ -839,9 +876,8 @@ def _save_embedded_files(out_dir, vm):
     if (not os.path.exists(out_dir)):
         log.info("Making dropped sample directory ...")
         os.mkdir(out_dir)
-        
+
     # Save each file.
-    out_dir = safe_str_convert(out_dir)
     for file_info in vm.embedded_files:
         short_name = safe_str_convert(file_info[0])
         long_name = safe_str_convert(file_info[1])
@@ -911,6 +947,10 @@ def _process_file (filename,
     if (time_limit is not None):
         core.vba_object.max_emulation_time = datetime.now() + timedelta(minutes=time_limit)
 
+    # Clear out any old crash information.
+    global got_crash_error
+    got_crash_error = False
+        
     # Create the emulator.
     log.info("Starting emulation...")
     vm = core.ViperMonkey(filename, data, do_jit=do_jit)
@@ -934,7 +974,7 @@ def _process_file (filename,
                 raise e
 
             # This may be VBScript with some null characters. Remove those and try again.
-            data = data.replace("\x00", "")
+            data = data.replace(b"\x00", b"")
             vba = _get_vba_parser(data)
 
         # Do we have analyzable VBA/VBScript? Do the analysis even
@@ -979,8 +1019,24 @@ def _process_file (filename,
             # Parse the VBA streams.
             log.info("Parsing VB...")
             comp_modules = parse_streams(vba, strip_useless)
+
+            # Do we have something to analyze?
             if (comp_modules is None):
+                # Parse error.
                 return None
+            if (comp_modules == "empty"):
+
+                # No VBA.
+                if (not display_int_iocs):
+                    safe_print("")
+                    _report_analysis_results(vm, data, display_int_iocs, orig_filename, out_file_name)
+                    safe_print('No VBA macros found.')
+                    safe_print('')
+                    return ([], [], [], [])
+                else:
+                    comp_modules = []
+
+            # We have VB. Analyze it.
             got_code = False
             for module_info in comp_modules:
                 m = module_info[0]
@@ -1030,7 +1086,8 @@ def _process_file (filename,
 
         # No VBA/VBScript found?
         else:
-            safe_print('Finished analyzing ' + safe_str_convert(orig_filename) + " .\n")
+            safe_print("")
+            _report_analysis_results(vm, data, display_int_iocs, orig_filename, out_file_name)
             safe_print('No VBA macros found.')
             safe_print('')
             return ([], [], [], [])
@@ -1041,6 +1098,7 @@ def _process_file (filename,
         # Print error info.
         if (("SystemExit" not in safe_str_convert(e)) and (". Aborting analysis." not in safe_str_convert(e))):
             traceback.print_exc()
+        got_crash_error = True
         log.error(safe_str_convert(e))
 
         # If this is an out of memory error terminate the process with an
@@ -1207,7 +1265,10 @@ def main():
                       help="output also to a file in addition to standard out")
     parser.add_option("-b", "--tee-bytes", action="store", default=0, type="int",
                       help="number of bytes to limit the tee'd log to")
-
+    parser.add_option("-a", "--artifacts-dir", action="store", default=None, type="str",
+                      help="Top level Directory in which to store artifacts subdirectories containing files dropped during emulation. " +\
+                      "Default is ./ .")
+    
     (options, args) = parser.parse_args()
 
     # Print version information and exit?
@@ -1225,8 +1286,9 @@ def main():
     # logging.basicConfig(level=LOG_LEVELS[options.loglevel], format='%(levelname)-8s %(message)s')
     colorlog.basicConfig(level=LOG_LEVELS[options.loglevel], format='%(log_color)s%(levelname)-8s %(message)s')
 
+    # Do the emulation.
     json_results = []
-
+    curr_artifact_dir = options.artifacts_dir
     for container, filename, data in xglob.iter_files(args,
                                                       recursive=options.recursive,
                                                       zip_password=options.zip_password,
@@ -1251,22 +1313,29 @@ def main():
                          tee_log=options.tee_log,
                          tee_bytes=options.tee_bytes,
                          out_file_name=options.out_file,
-                         do_jit=options.do_jit)
+                         do_jit=options.do_jit,
+                         artifact_dir=curr_artifact_dir)
 
             # add json results to list
             if (options.out_file):
-                with open(options.out_file, 'r') as json_file:
-                    try:
-                        json_results.append(json.loads(json_file.read()))
-                    except ValueError:
-                        pass
-
+                if (not got_crash_error):
+                    with open(options.out_file, 'r') as json_file:
+                        try:
+                            json_results.append(json.loads(json_file.read()))
+                        except ValueError:
+                            pass
+                else:
+                    # Save that analysis crashed.
+                    json_results.append({"crash_error": got_crash_error})
+                    
     if (options.out_file):
-        with open(options.out_file, 'w') as json_file:
-            if (len(json_results) > 1):
-                json_file.write(json.dumps(json_results, indent=2))
+        if isinstance(json_results, list):
+            if (len(json_results) == 0):
+                json_results = {}
             else:
-                json_file.write(json.dumps(json_results[0], indent=2))
+                json_results = json_results[0]
+        with open(options.out_file, 'w') as json_file:
+            json_file.write(json.dumps(json_results, indent=2))
 
         log.info("Saved results JSON to output file " + options.out_file)
 

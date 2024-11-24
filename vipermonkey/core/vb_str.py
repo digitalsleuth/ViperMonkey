@@ -45,14 +45,14 @@ https://github.com/decalage2/ViperMonkey
 
 __version__ = '0.08'
 
-from curses_ascii import isprint
+from vipermonkey.core.curses_ascii import isprint
 try:
     # sudo pypy -m pip install rure
     import rure as re
 except ImportError:
     import re
 
-from utils import safe_str_convert
+from vipermonkey.core.utils import safe_str_convert
 
 def is_wide_str(the_str):
     """Test to see if the given string is a simple wide char string
@@ -102,7 +102,7 @@ def is_mixed_wide_ascii_str(the_str):
     """
     uni_str = None
     try:
-        uni_str = the_str.decode("utf-8")
+        uni_str = the_str.decode("latin-1")
     except UnicodeDecodeError:
         # Punt.
         return False
@@ -132,6 +132,8 @@ def get_ms_ascii_value(the_str):
     """
 
     # Sanity check.
+    #print("ASCII!!")
+    #print("ASC: " + the_str)
     if ((not isinstance(the_str, str)) and (not isinstance(the_str, VbStr))):
         return ValueError("'" + safe_str_convert(the_str) + "' is not a string.")    
     
@@ -158,17 +160,41 @@ def get_ms_ascii_value(the_str):
     # Look up the MS extended ASCII code.
     if (the_str not in str_to_ascii_map):
 
+        # Hack.
+        if (the_str == "â"):
+            return 134
+        
         # Ugh. Some of these codes need to be fixed.
         r = ord(the_str[0])
         if (r in single_char_ord_fixes):
             r = single_char_ord_fixes[r]
         
         # Punt and just return the code for the 1st char in the string.
+        #print("PUNT!!")
+        #print(r)
         return r
 
     # MS wide char. Return MS extended ASCII code.
+    #print("WIDE ASC: " + str(str_to_ascii_map[the_str]))
     return str_to_ascii_map[the_str]
-    
+
+def is_ascii(s):
+    """Check to see if a string only contains characters with ASCII code
+    less than 128.
+
+    @param s (str) The stringg to check.
+
+    @return (boolean) True if non-extended ASCII, False if not.
+
+    """
+    for c in s:
+        if (ord(c) > 127):
+            return False
+    return True
+
+# Cache VBA VbStr objects since they can be expensive to create.
+str_cache = {}
+
 class VbStr(object):
 
     # VBA uses a different extended ASCII character set for byte values greater than 127
@@ -334,7 +360,13 @@ class VbStr(object):
         # Make sure we have a string.
         orig_str = safe_str_convert(orig_str)
         self.orig_str = orig_str
-            
+
+        # Computing these strings can be expensive. Do we have a
+        # cached value for the string?
+        if (orig_str in str_cache):
+            self.vb_str = str_cache[orig_str]
+            return
+        
         # If this is VBScript each character will be a single byte (like the Python
         # string).
         self.vb_str = []
@@ -347,17 +379,18 @@ class VbStr(object):
             # Break out ASCII characters and multi-byte wide chars as individual "characters".
 
             # Replace the multi-byte wide chars with special strings. We will break these out
-            # later.
+            # later. Only do the breakout if we have wide chars.
             tmp_str = orig_str
-            for code in self.ascii_map:
-                chars = ""
-                for bts in self.ascii_map[code]:
-                    pos = 0
-                    for bval in bts:
-                        chars += chr(bval)
-                    code_str = safe_str_convert(code)
-                    tmp_str = safe_str_convert(tmp_str)
-                    tmp_str = tmp_str.replace(chars, "MARK!@#$%%$#@!:.:.:.:.:.:." + code_str + "_" + safe_str_convert(pos) + "MARK!@#$%%$#@!")
+            if (not is_ascii(tmp_str)):
+                for code in self.ascii_map:
+                    chars = ""
+                    for bts in self.ascii_map[code]:
+                        pos = 0
+                        for bval in bts:
+                            chars += chr(bval)
+                        code_str = safe_str_convert(code)
+                        tmp_str = safe_str_convert(tmp_str)
+                        tmp_str = tmp_str.replace(chars, "MARK!@#$%%$#@!:.:.:.:.:.:." + code_str + "_" + safe_str_convert(pos) + "MARK!@#$%%$#@!")
 
             # Split the string up into ASCII char chunks and individual wide chars.
             for val in tmp_str.split("MARK!@#$%"):
@@ -379,13 +412,19 @@ class VbStr(object):
                     chars = ""
                     for bt in self.ascii_map[val][pos]:
                         chars += chr(bt)
+                    if (chars == '\xc3\x85'):
+                        chars = '\xc3'
                     self.vb_str.append(chars)
 
                 # ASCII char chunk.
                 else:
                     for c in val:
                         self.vb_str.append(c)
-                
+
+            # Cache the result for large strings.
+            if (len(orig_str) > 100):
+                str_cache[orig_str] = self.vb_str
+                        
     def __repr__(self):
         r = ""
         for vb_c in self.vb_str:

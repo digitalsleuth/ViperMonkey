@@ -1,11 +1,12 @@
-"""@package vipermonkey.core.function_import_visitor Visitor for
-collecting the names of functions imported from DLLs in a VBA object.
+"""@package vipermonkey.core.contains_statement_visitor Visitor for
+checking to see if a given set of statement types appear in the
+visited object.
 
 """
 
 # pylint: disable=pointless-string-statement
 """
-ViperMonkey: Visitor for collecting the names of functions impoorted from DLLs.
+ViperMonkey: Visitor for checking for use of given types of statements.
 
 ViperMonkey is a specialized engine to parse, analyze and interpret Microsoft
 VBA macros (Visual Basic for Applications), mainly for malware analysis.
@@ -43,26 +44,25 @@ https://github.com/decalage2/ViperMonkey
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 from vipermonkey.core.visitor import visitor
-from vipermonkey.core import statements
-from vipermonkey.core.utils import safe_str_convert
 
-class function_import_visitor(visitor):
-    """Collect the names and aliases of all functions imported from DLLs.
+class contains_statement_visitor(visitor):
+    """Visitor for checking to see if a given set of statement types
+    appear in the visited object. The result of the search will be in
+    the .found field of the visitor.
 
     """
 
-    def __init__(self):
-        self.names = set()
-        self.aliases = set()
-        self.funcs = {}
+    def __init__(self, statement_types):
+        self.statement_types = statement_types
+        self.found = False
         self.visited = set()
-        
+    
     def visit(self, item):
         if (item in self.visited):
             return False
-        self.visited.add(item)
-        if (isinstance(item, statements.External_Function)):
-            self.funcs[safe_str_convert(item.name)] = safe_str_convert(item.alias_name)
-            self.names.add(safe_str_convert(item.alias_name))
-            self.aliases.add(safe_str_convert(item.name))
+        self.visited.add(item)        
+        if self.found:
+            return False
+        if (type(item) in self.statement_types):
+            self.found = True
         return True
